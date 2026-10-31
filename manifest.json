@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "对话大纲 + 提示词库",
+  "version": "1.0.1",
+  "description": "为 Claude 和 ChatGPT 网页版添加按提问分组的多级标题目录，以及可一键插入的提示词库。数据只保存在本地。",
+  "permissions": ["storage"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://claude.ai/*",
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

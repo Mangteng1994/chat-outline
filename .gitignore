@@ -1,0 +1,9 @@
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 打包产物与本地文件
+*.zip
+*.crx
+*.pem
+.claude/
