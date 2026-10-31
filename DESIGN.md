@@ -34,7 +34,7 @@
 - 搜索框、标签筛选（全部 + 所有标签）、卡片列表（按最近修改排序）。
 - 卡片：标题、标签、两行预览、变量列表；操作：插入、复制、编辑、删除（删除需二次确认，在卡片内完成，不用浏览器弹窗）。
 - 编辑器：标题、标签（逗号/顿号分隔）、内容；提示 `{{变量名}}` 用法。
-- 首次安装放入三条示例提示词。
+- 首次安装时提示词库为空，项目不内置任何提示词。
 - 导出为 `提示词备份-YYYYMMDD.json`（`{app, version, prompts}`）；导入时按 `id` 合并（已有则更新，没有则新增）。
 
 ### 变量
@@ -50,7 +50,7 @@
 
 ## 实现要点
 
-- 单个 content script（`content.js`），无后台脚本，权限只有 `storage`。
+- 主要功能在 content script（`content.js`）。同步由后台脚本 `background.js` 完成，设置在 `options.html`。权限只有 `storage`，网盘地址在用户保存设置时通过可选权限单独授权。
 - 界面全部在 Shadow DOM 中，样式与网页互不干扰；面板内的键盘事件在宿主元素上阻止冒泡，避免被网页快捷键抢走。
 - **选择器集中在 `SITES`**：
   - Claude：提问 `[data-testid="user-message"]`；回答 `.font-claude-response` / `.font-claude-message` / `[data-is-streaming]`；输入框 `div.ProseMirror[contenteditable="true"]`。
@@ -64,6 +64,15 @@
 - `MutationObserver` 监听页面变化，500ms 防抖后重建；内容签名不变时不重绘。每秒检查一次 URL，切换对话时重置折叠状态并读取该对话的星标。
 - 写入输入框：先恢复最后记录的光标位置，`document.execCommand('insertText')` 插入（ProseMirror 能正确识别换行为段落）；失败时模拟粘贴事件。`textarea` 则直接设置值并触发 `input` 事件。
 - 存储（`chrome.storage.local`）：`settings`、`prompts`、`varMemory`、`stars:<域名><路径>`、`hidden:<域名><路径>`。
+
+## 提示词同步
+
+- 网盘文件是 `chat-outline/prompts.json`（`{app, version, prompts, tombstones}`）。个人数据只在浏览器存储和用户的网盘里，项目里没有提示词。
+- 合并：按 `id` 取 `updatedAt` 较新的；`promptTombstones` 记录删除，比提示词新时删除生效，保留 180 天。
+- 写入用 `If-Match` 防止覆盖其他电脑的修改，返回 412 时重新读取并合并。网盘文件损坏时报错，不覆盖。
+- 时机：打开页面或切回标签页时拉取（最多每分钟一次），修改后 3 秒推送，也可手动同步。
+- 旧版本内置的示例（`seed-0` 等）启动时删除并写入删除记录，用户改过的保留。
+- 密码存在 `syncConfig`，只有后台和设置页读取；内容脚本只读 `syncEnabled` 和 `syncStatus`。
 
 ## 测试
 
@@ -82,3 +91,5 @@ v1.0.1 在真实的 claude.ai 和 chatgpt.com 上（Chrome 151 内核）验证�
 - 标题也可以加星。
 - 提示词排序（置顶、按使用次数）。
 - 发布到 Chrome 应用商店。
+- 同步星标和隐藏记录。
+- 网盘文件加密。

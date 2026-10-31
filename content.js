@@ -1,7 +1,7 @@
 /*
  * 对话大纲 + 提示词库
  * 为 claude.ai 与 chatgpt.com 添加：按提问分组的多级标题目录、星标、提示词库（含 {{变量}} 与 // 快速插入）。
- * 所有数据保存在 chrome.storage.local，不发送到任何服务器。
+ * 数据保存在 chrome.storage.local；只有用户设置了自己的网盘时，提示词才会同步过去（见 background.js）。
  */
 (() => {
   'use strict';
@@ -43,23 +43,6 @@
   const HEADING_SEL = 'h1,h2,h3,h4,h5,h6';
   const SCROLL_OFFSET = 90; // 跳转时为顶部固定栏预留的距离
   const DEFAULT_SETTINGS = { open: true, tab: 'outline', depth: 3, starredOnly: false };
-  const SEED_PROMPTS = [
-    {
-      title: '文档逐节分析',
-      tags: ['文献'],
-      content: '你是一个高效的信息分析助手。请分析我上传的这个文档，逐个部分概括核心内容，并指出每部分的论据是否充分。',
-    },
-    {
-      title: '论文段落润色',
-      tags: ['写作'],
-      content: '请按 {{期刊}} 的写作风格润色下面这段文字，保持原意，不超过 {{字数上限}} 字，并列出主要修改：\n\n',
-    },
-    {
-      title: '实验方案审查',
-      tags: ['实验'],
-      content: '请检查下面的实验设计：对照组是否完整、变量是否控制、样本量是否合理，并给出改进建议：\n\n',
-    },
-  ];
 
   // ---------------------------------------------------------------------------
   // 存储（扩展环境用 chrome.storage.local；否则回退到 localStorage，便于测试）
@@ -184,6 +167,7 @@
     unfold: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>',
     list: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>',
     down2: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M7 11l5 5 5-5M5 20h14"/></svg>',
+    sync: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14-4.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4.5l2-2.500M20 20v-5h-5"/></svg>',
     eye: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
     eyeOff: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l16 16M10 5.8a9 9 0 0 1 2-.3c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-3 3.7M6.5 7.6A16 16 0 0 0 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.2-1"/></svg>',
     up2: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V8M7 13l5-5 5 5M5 4h14"/></svg>',
@@ -197,6 +181,9 @@
   const S = {
     settings: { ...DEFAULT_SETTINGS },
     prompts: [],
+    tombstones: [], // 已删除提示词的记录，同步时告诉其他电脑也删除
+    syncEnabled: false,
+    syncStatus: null,
     stars: new Set(),
     hidden: new Set(), // 隐藏的条目，key 与折叠状态相同（g:… / h:…）
     showHidden: false,
@@ -337,6 +324,9 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
 .pi .ptag { font-size:11px; color:var(--tx3); flex:none; }
 .pi.on { background:var(--ac-bg); color:var(--ac-tx); }
 .pi.on .ptag { color:var(--ac-tx); }
+.syncline { flex:none; padding:5px 12px 7px; font-size:12px; color:var(--tx3); text-align:left; border-top:1px solid var(--bd); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.syncline:hover { color:var(--tx); }
+.syncline.err { color:var(--danger); }
 .pfoot { font-size:11px; color:var(--tx3); padding:4px 8px 2px; border-top:1px solid var(--bd); margin-top:4px; }
 
 .modal { position:fixed; inset:0; background:rgba(0,0,0,.25); display:flex; align-items:center; justify-content:center; }
@@ -374,6 +364,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
         <div class="searchrow"><input id="pq" placeholder="搜索提示词" /></div>
         <div class="tags" id="ptags"></div>
         <div class="body" id="plist"></div>
+        <button class="syncline" id="syncline" hidden></button>
       </div>
       <div class="body form" id="pform" hidden></div>
     </div>
@@ -902,7 +893,8 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       tools.innerHTML = `
         <button class="ib" data-tool="new" title="新建提示词">${ICON.plus}</button>
         <button class="ib" data-tool="export" title="导出提示词">${ICON.down2}</button>
-        <button class="ib" data-tool="import" title="导入提示词">${ICON.up2}</button>`;
+        <button class="ib" data-tool="import" title="导入提示词">${ICON.up2}</button>
+        ${hasChromeStorage ? `<button class="ib" data-tool="sync" title="立即同步">${ICON.sync}</button>` : ''}`;
     }
   }
 
@@ -918,6 +910,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     else if (tool === 'new') openEditor(null);
     else if (tool === 'export') exportPrompts();
     else if (tool === 'import') $('#file').click();
+    else if (tool === 'sync') syncNow();
   });
   root.querySelectorAll('.tab').forEach((t) =>
     t.addEventListener('click', () => {
@@ -966,7 +959,10 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
   // ---------------------------------------------------------------------------
   // 提示词库
   // ---------------------------------------------------------------------------
-  const savePrompts = () => store.set('prompts', S.prompts);
+  const savePrompts = () => {
+    store.set('prompts', S.prompts);
+    queueSync();
+  };
 
   function allTags() {
     const set = new Set();
@@ -1067,6 +1063,8 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       renderPrompts();
     } else if (act === 'del-yes') {
       S.prompts = S.prompts.filter((x) => x.id !== id);
+      S.tombstones = [...S.tombstones.filter((t) => t.id !== id), { id, deletedAt: Date.now() }];
+      store.set('promptTombstones', S.tombstones);
       S.confirmDelete = null;
       savePrompts();
       renderPrompts();
@@ -1114,7 +1112,8 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const now = Date.now();
     if (S.editing.id) {
       const p = S.prompts.find((x) => x.id === S.editing.id);
-      Object.assign(p, { title, content, tags, updatedAt: now });
+      if (p) Object.assign(p, { title, content, tags, updatedAt: now });
+      else S.prompts.push({ id: S.editing.id, title, content, tags, updatedAt: now }); // 编辑时被其他电脑删除了
     } else {
       S.prompts.push({ id: uid(), title, content, tags, updatedAt: now });
     }
@@ -1152,7 +1151,8 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
           title: String(raw.title),
           content: raw.content,
           tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
-          updatedAt: raw.updatedAt || Date.now(),
+          // 导入已删除的提示词时算作新修改，否则同步时又会被删掉
+          updatedAt: S.tombstones.some((t) => t.id === raw.id) ? Date.now() : raw.updatedAt || Date.now(),
         };
         const existing = S.prompts.find((p) => p.id === item.id);
         if (existing) {
@@ -1170,6 +1170,66 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       toast('导入失败：文件不是有效的提示词备份');
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // 同步：网络请求和合并都在 background.js，这里只负责触发和显示状态
+  // ---------------------------------------------------------------------------
+  async function sendBackground(msg) {
+    try {
+      return await chrome.runtime.sendMessage(msg);
+    } catch (e) {
+      return null; // 扩展刚更新时，旧页面连不上后台
+    }
+  }
+  const queueSync = debounce(() => S.syncEnabled && sendBackground({ type: 'sync', reason: 'change' }), 3000);
+
+  async function syncNow() {
+    if (!S.syncEnabled) return sendBackground({ type: 'open-sync-settings' });
+    toast('正在同步…');
+    const status = await sendBackground({ type: 'sync', reason: 'manual' });
+    if (!status) toast('同步失败，请刷新网页后再试');
+    else toast(status.ok ? '同步完成' : '同步失败：' + status.error);
+  }
+
+  function renderSyncLine() {
+    const line = $('#syncline');
+    if (!hasChromeStorage) return;
+    const st = S.syncStatus;
+    const failed = S.syncEnabled && st && !st.ok;
+    line.hidden = false;
+    line.classList.toggle('err', !!failed);
+    if (!S.syncEnabled) line.textContent = '同步未开启，点此设置';
+    else if (!st) line.textContent = '等待同步…';
+    else if (failed) line.textContent = '同步失败：' + st.error;
+    else {
+      const t = new Date(st.at);
+      line.textContent = `已同步 ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+    }
+    line.title = '打开同步设置';
+  }
+  $('#syncline').addEventListener('click', () => sendBackground({ type: 'open-sync-settings' }));
+
+  async function startSync() {
+    if (!hasChromeStorage) return;
+    S.syncEnabled = await store.get('syncEnabled', false);
+    S.syncStatus = await store.get('syncStatus', null);
+    renderSyncLine();
+    // 其他标签页或后台同步修改数据后，这里跟着更新
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (changes.promptTombstones) S.tombstones = changes.promptTombstones.newValue || [];
+      if (changes.prompts && JSON.stringify(changes.prompts.newValue) !== JSON.stringify(S.prompts)) {
+        S.prompts = changes.prompts.newValue || [];
+        if (S.settings.tab === 'prompts' && !S.editing) renderPrompts();
+      }
+      if (changes.syncEnabled) S.syncEnabled = !!changes.syncEnabled.newValue;
+      if (changes.syncStatus) S.syncStatus = changes.syncStatus.newValue || null;
+      if (changes.syncEnabled || changes.syncStatus) renderSyncLine();
+    });
+    const pull = () => S.syncEnabled && !document.hidden && sendBackground({ type: 'sync', reason: 'open' });
+    document.addEventListener('visibilitychange', pull);
+    pull();
+  }
 
   // ---------------------------------------------------------------------------
   // 变量填写对话框
@@ -1485,12 +1545,16 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
 
   async function init() {
     S.settings = { ...DEFAULT_SETTINGS, ...(await store.get('settings', {})) };
-    let prompts = await store.get('prompts', null);
-    if (!Array.isArray(prompts)) {
-      prompts = SEED_PROMPTS.map((p, i) => ({ ...p, id: uid() + i, updatedAt: Date.now() - i }));
-      store.set('prompts', prompts);
+    const prompts = await store.get('prompts', []);
+    S.tombstones = await store.get('promptTombstones', []);
+    // 旧版本内置的示例已取消：没改过的删掉，并记录删除，避免同步时被带回来
+    S.prompts = prompts.filter((p) => !(/^seed-\d$/.test(p.id) && !p.updatedAt));
+    if (S.prompts.length !== prompts.length) {
+      const now = Date.now();
+      S.tombstones.push(...prompts.filter((p) => !S.prompts.includes(p)).map((p) => ({ id: p.id, deletedAt: now })));
+      store.set('prompts', S.prompts);
+      store.set('promptTombstones', S.tombstones);
     }
-    S.prompts = prompts;
     S.varMemory = await store.get('varMemory', {});
     S.stars = new Set(await store.get(starKey(), []));
     S.hidden = new Set(await store.get(hiddenKey(), []));
@@ -1499,6 +1563,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     syncChrome();
     await refresh(true);
     if (S.settings.tab === 'prompts') renderPrompts();
+    startSync();
     new MutationObserver(onPageChange).observe(document.body, {
       childList: true,
       subtree: true,
