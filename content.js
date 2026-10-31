@@ -16,6 +16,11 @@
       user: ['[data-testid="user-message"]'],
       assistant: ['.font-claude-response', '.font-claude-message', '[data-is-streaming]'],
       composer: ['div.ProseMirror[contenteditable="true"]', 'fieldset [contenteditable="true"]', 'textarea'],
+      // 消息在整个对话中的绝对序号，虚拟列表卸载消息后靠它排序
+      order: (el) => {
+        const row = el.closest('[data-index]');
+        return row ? +row.getAttribute('data-index') : null;
+      },
     },
     chatgpt: {
       // 按顺序尝试，使用第一个能找到内容的选择器
@@ -23,6 +28,13 @@
       user: ['[data-user-message-bubble="true"]', '[data-message-author-role="user"]', 'article[data-turn="user"]', '[data-turn="user"]'],
       assistant: ['[data-markdown-text-style="assistant-message"]', '[data-message-author-role="assistant"]', 'article[data-turn="assistant"]', '[data-turn="assistant"]'],
       composer: ['#prompt-textarea', 'div.ProseMirror[contenteditable="true"]', 'form textarea'],
+      // 切换对话后旧对话仍留在页面的隐藏容器里，只读取可见容器中的消息
+      pane: '[data-app-action-timeline-scroll]',
+      order: (el) => {
+        const turn = el.closest('[data-content-search-turn-key]');
+        const m = turn && turn.getAttribute('data-content-search-turn-key').match(/(\d+)$/);
+        return m ? +m[1] : null;
+      },
     },
   };
   const SITE = /(^|\.)claude\.ai$/.test(location.hostname) ? 'claude' : 'chatgpt';
@@ -125,6 +137,16 @@
     c.querySelectorAll('.sr-only').forEach((x) => x.remove());
     return c.textContent;
   };
+  const inActivePane = (els) => {
+    if (!CFG.pane) return els;
+    const seen = new Map();
+    return els.filter((el) => {
+      const pane = el.closest(CFG.pane);
+      if (!pane) return true;
+      if (!seen.has(pane)) seen.set(pane, pane.getBoundingClientRect().width > 0);
+      return seen.get(pane);
+    });
+  };
   // 只保留最外层的匹配元素，避免同一条消息被重复计算
   const outermost = (els) => els.filter((el) => !els.some((o) => o !== el && o.contains(el)));
   const docOrder = (a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
@@ -141,6 +163,15 @@
   };
   const fillVars = (text, values) => text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, n) => (values[n] ?? ''));
 
+  // 提问内容不会变，缓存后刷新时不必再读 innerText（它会触发页面重新排版）
+  const userTexts = new WeakMap();
+  const userText = (el) => {
+    if (userTexts.has(el)) return userTexts.get(el);
+    const text = clean(visibleText(el));
+    if (text) userTexts.set(el, text);
+    return text;
+  };
+
   const ICON = {
     star: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/></svg>',
     starOn: '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/></svg>',
@@ -153,18 +184,29 @@
     unfold: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>',
     list: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>',
     down2: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M7 11l5 5 5-5M5 20h14"/></svg>',
+    eye: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
+    eyeOff: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l16 16M10 5.8a9 9 0 0 1 2-.3c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-3 3.7M6.5 7.6A16 16 0 0 0 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.2-1"/></svg>',
     up2: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V8M7 13l5-5 5 5M5 4h14"/></svg>',
   };
 
   // ---------------------------------------------------------------------------
   // 状态
   // ---------------------------------------------------------------------------
+  // 对话 id；不在对话页时用路径，例如 /new
+  const convKey = () => (location.pathname.match(/\/(?:c|chat)\/([^/]+)/) || [])[1] || location.pathname;
   const S = {
     settings: { ...DEFAULT_SETTINGS },
     prompts: [],
     stars: new Set(),
+    hidden: new Set(), // 隐藏的条目，key 与折叠状态相同（g:… / h:…）
+    showHidden: false,
     collapsed: new Set(),
     path: location.pathname,
+    conv: convKey(),
+    caches: new Map(), // 对话 id → 消息缓存（消息 id → 消息）
+    owners: new Map(), // 消息 id → 所属对话
+    seq: 0,
+    seek: 0, // 定位未加载条目的序号，变化后旧的定位停止
     model: [],
     sig: '',
     outlineQuery: '',
@@ -174,11 +216,13 @@
     editing: null, // 正在编辑的提示词（新建时 id 为 null）
     confirmDelete: null,
     activeId: null,
+    pin: null, // 点击目录后锁定高亮的条目 { key, idx }，用户滚动时解除
     caret: null, // 输入框中最后的光标位置
     picker: null, // // 快速插入的状态
     varMemory: {},
   };
   const starKey = () => 'stars:' + location.hostname + location.pathname;
+  const hiddenKey = () => 'hidden:' + location.hostname + location.pathname;
 
   // ---------------------------------------------------------------------------
   // 界面（Shadow DOM，样式与网页互不影响）
@@ -211,7 +255,8 @@ textarea { resize:vertical; min-height:140px; line-height:1.5; }
   background:var(--bg); border:1px solid var(--bd); border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
 .panel[hidden] { display:none; }
 .tabs { display:flex; align-items:center; gap:4px; padding:10px 10px 8px; border-bottom:1px solid var(--bd); }
-.tab { padding:4px 10px; border-radius:8px; color:var(--tx2); }
+.tab { flex:none; padding:4px 8px; border-radius:8px; color:var(--tx2); white-space:nowrap; }
+#tabtools { display:inline-flex; flex:none; }
 .tab.on { background:var(--bg2); color:var(--tx); font-weight:600; }
 .sp { flex:1; }
 .ib { width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border-radius:7px; color:var(--tx3); }
@@ -234,11 +279,21 @@ textarea { resize:vertical; min-height:140px; line-height:1.5; }
 .ghead { display:flex; align-items:center; gap:6px; }
 .badge { background:var(--ok-bg); color:var(--ok-tx); font-size:11px; font-weight:600; padding:0 6px; border-radius:6px; line-height:18px; }
 .lbl, .cnt { font-size:12px; color:var(--tx3); }
-.gstar { color:var(--tx3); opacity:0; }
-.grp:hover .gstar, .gstar.on { opacity:1; }
+.gstar, .ghide { visibility:hidden; flex:none; color:var(--tx3); }
+.grp:hover > .ghead .gstar, .grp:hover > .ghead .ghide, .gstar.on, .ghide.on { visibility:visible; }
+.ghead .ib { width:22px; height:22px; flex:none; }
+.ghead { gap:4px; }
+.node { position:relative; }
+.nhide { display:none; position:absolute; right:2px; top:2px; color:var(--tx3); background:var(--bg2); }
+.node:hover .nhide, .nhide.on { display:inline-flex; }
 .gstar.on { color:var(--star); }
+.ghide.on, .nhide.on { color:var(--ac-tx); }
+.nhide { width:20px; height:20px; }
+.hid { opacity:.5; }
+.hbar { display:flex; align-items:center; justify-content:space-between; padding:2px 10px; font-size:12px; color:var(--tx3); }
+.hbar button { color:var(--ac-tx); }
 .chev { color:var(--tx3); }
-.gtext { font-weight:600; margin:4px 0 2px; cursor:pointer; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; border-radius:6px; padding:1px 4px; margin-left:-4px; }
+.gtext { flex:1; min-width:0; font-weight:600; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-radius:6px; padding:1px 4px; }
 .gtext:hover { background:var(--bg2); }
 .tree { border-left:1px solid var(--bd2); margin:6px 0 0 6px; }
 .node { display:flex; align-items:flex-start; gap:2px; border-radius:6px; cursor:pointer; padding:3px 6px 3px 0; }
@@ -311,6 +366,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
         <button class="chip" id="starred" title="只显示标了星的提问">${ICON.star}<span>只看标记</span></button>
       </div>
       <div class="searchrow" id="osearch" hidden><input id="oq" placeholder="搜索提问和标题" /></div>
+      <div class="hbar" id="hbar" hidden></div>
       <div class="body" id="olist"></div>
     </div>
     <div id="view-prompts" hidden>
@@ -339,6 +395,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
   const dialog = $('#dialog');
 
   let toastTimer;
+  let edgeTimer;
   function toast(msg) {
     const t = $('#toast');
     t.textContent = msg;
@@ -371,9 +428,13 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
   // ---------------------------------------------------------------------------
   // 读取对话结构
   // ---------------------------------------------------------------------------
-  function buildModel() {
-    const users = outermost(qsaFirst(CFG.user));
-    const assistants = outermost(SITE === 'claude' ? qsaAll(CFG.assistant) : qsaFirst(CFG.assistant)).filter(
+  // 把页面上当前存在的消息写入缓存，返回这些消息
+  function scanMessages() {
+    const conv = convKey();
+    if (!S.caches.has(conv)) S.caches.set(conv, new Map());
+    const cache = S.caches.get(conv);
+    const users = outermost(inActivePane(qsaFirst(CFG.user)));
+    const assistants = outermost(inActivePane(SITE === 'claude' ? qsaAll(CFG.assistant) : qsaFirst(CFG.assistant))).filter(
       (a) => !users.some((u) => u.contains(a) || a.contains(u))
     );
     const items = [
@@ -381,25 +442,70 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       ...assistants.map((el) => ({ type: 'assistant', el })),
     ].sort((a, b) => docOrder(a.el, b.el));
 
-    const groups = [];
-    const seen = {};
-    let cur = null;
-    const newGroup = (el, text) => {
-      const base = hash(text.slice(0, 300));
-      seen[base] = (seen[base] || 0) + 1;
-      cur = { key: base + '-' + seen[base], el, text, headings: [] };
-      groups.push(cur);
-    };
-    for (const it of items) {
-      if (it.type === 'user') {
-        newGroup(it.el, clean(visibleText(it.el)) || '（空白提问）');
+    const live = [];
+    const counts = {};
+    for (const { type, el } of items) {
+      const order = CFG.order(el);
+      const turn = el.closest('[data-turn-key]');
+      const slot = (turn ? turn.getAttribute('data-turn-key') : 'o' + (order ?? live.length)) + ':' + type;
+      const sub = (counts[slot] = (counts[slot] || 0) + 1) - 1;
+      const id = slot + ':' + sub;
+      // 切换对话的瞬间页面上可能还是旧对话
+      const owner = S.owners.get(id);
+      if (owner && owner !== conv) {
+        if (owner[0] !== '/') continue;
+        S.caches.get(owner).delete(id); // /new 变成正式对话时消息跟着走
+      }
+      S.owners.set(id, conv);
+      const msg = cache.get(id) || { id, type, sub, seq: S.seq++, headings: [] };
+      msg.el = el;
+      msg.order = order ?? msg.order ?? msg.seq;
+      if (type === 'user') {
+        msg.text = userText(el) || '（空白提问）';
+        if (!msg.key) {
+          msg.base = hash(msg.text.slice(0, 300));
+          msg.key = msg.base + '-' + ([...cache.values()].filter((m) => m.base === msg.base).length + 1);
+        }
       } else {
-        if (!cur) newGroup(it.el, '（对话开头）');
-        it.el.querySelectorAll(HEADING_SEL).forEach((h) => {
+        const heads = [];
+        el.querySelectorAll(HEADING_SEL).forEach((h) => {
           if (h.closest('pre, code, .sr-only')) return;
-          const text = clean(h.innerText || h.textContent);
-          if (text) cur.headings.push({ el: h, level: +h.tagName[1], text });
+          const text = clean(h.textContent);
+          if (text) heads.push({ el: h, level: +h.tagName[1], text });
         });
+        if (heads.length || !msg.headings.length) msg.headings = heads; // 回答可能还没渲染完
+      }
+      cache.set(id, msg);
+      live.push(msg);
+    }
+    // 重新生成或编辑后，同一位置换了新消息，旧的要去掉
+    const liveIds = new Set(live.map((m) => m.id));
+    const taken = new Set(live.map((m) => m.order + m.type));
+    for (const m of cache.values()) {
+      if (!liveIds.has(m.id) && taken.has(m.order + m.type)) {
+        cache.delete(m.id);
+        S.owners.delete(m.id);
+      }
+    }
+    return live;
+  }
+
+  function buildModel() {
+    scanMessages();
+    const msgs = [...S.caches.get(convKey()).values()].sort(
+      (a, b) => a.order - b.order || (a.type === b.type ? a.sub - b.sub : a.type === 'user' ? -1 : 1)
+    );
+    const groups = [];
+    let cur = null;
+    for (const m of msgs) {
+      if (m.type === 'user' || !cur) {
+        const isUser = m.type === 'user';
+        cur = { key: isUser ? m.key : 'a-' + m.id, el: m.el, msg: m, text: isUser ? m.text : '（提问未加载）', headings: [], answers: [] };
+        groups.push(cur);
+      }
+      if (m.type === 'assistant') {
+        cur.answers.push(m);
+        m.headings.forEach((h, mi) => cur.headings.push({ ...h, msg: m, mi }));
       }
     }
     // 为每组标题建树：depth 是相对层级（回答里最高一级标题为 1）
@@ -448,15 +554,20 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     let html = '';
     for (const n of nodes) {
       if (n.depth > maxDepth) continue;
-      const visibleKids = n.children.filter((c) => c.depth <= maxDepth);
       const ck = 'h:' + g.key + ':' + n.idx;
+      const isHidden = S.hidden.has(ck);
+      if (isHidden && !S.showHidden) continue;
+      const visibleKids = n.children.filter(
+        (c) => c.depth <= maxDepth && (S.showHidden || !S.hidden.has('h:' + g.key + ':' + c.idx))
+      );
       const collapsed = !q && S.collapsed.has(ck);
       const pad = 4 + (n.depth - 1) * 14;
-      html += `<div class="node d${Math.min(n.depth, 6)}" data-act="goto-h" data-id="${n.id}" style="padding-left:${pad}px" title="${esc(n.text)}">`;
+      html += `<div class="node d${Math.min(n.depth, 6)} ${isHidden ? 'hid' : ''}" data-act="goto-h" data-id="${n.id}" style="padding-left:${pad}px" title="${esc(n.text)}">`;
       html += visibleKids.length
         ? `<span class="tg" data-act="toggle-h" data-ck="${esc(ck)}">${collapsed ? ICON.right : ICON.down}</span>`
         : `<span class="tg"></span>`;
-      html += `<span class="t">${highlight(n.text, q)}</span></div>`;
+      html += `<span class="t">${highlight(n.text, q)}</span>`;
+      html += `<button class="ib nhide ${isHidden ? 'on' : ''}" data-act="hide" data-ck="${esc(ck)}" title="${isHidden ? '取消隐藏' : '隐藏这个标题'}">${isHidden ? ICON.eye : ICON.eyeOff}</button></div>`;
       if (visibleKids.length && !collapsed) html += renderNodes(g, n.children, q);
     }
     return html;
@@ -469,34 +580,50 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     for (const g of S.model) {
       const starred = S.stars.has(g.key);
       if (S.settings.starredOnly && !starred) continue;
+      const gk = 'g:' + g.key;
+      const isHidden = S.hidden.has(gk);
+      if (isHidden && !S.showHidden) continue;
       let tree = g.tree;
       if (q) {
         tree = filterTree(g.tree, q);
         if (!tree.length && !g.text.toLowerCase().includes(q)) continue;
       }
       shown++;
-      const gk = 'g:' + g.key;
       const collapsed = !q && S.collapsed.has(gk);
       const num = String(g.index + 1).padStart(2, '0');
-      html += `<div class="grp" data-key="${esc(g.key)}">
+      html += `<div class="grp ${isHidden ? 'hid' : ''}" data-key="${esc(g.key)}">
         <div class="ghead">
-          <span class="badge">${num}</span><span class="lbl">提问</span><span class="sp"></span>
-          <span class="cnt">${g.headings.length ? g.headings.length + ' 个标题' : ''}</span>
+          <span class="badge">${num}</span>
+          <div class="gtext" data-act="goto-u" data-id="${g.id}" title="${esc(g.text.slice(0, 500))}">${highlight(g.text, q)}</div>
+          <span class="cnt" title="${g.headings.length} 个标题">${g.headings.length || ''}</span>
           <button class="ib gstar ${starred ? 'on' : ''}" data-act="star" data-key="${esc(g.key)}" title="${starred ? '取消标记' : '标记这个提问'}">${starred ? ICON.starOn : ICON.star}</button>
+          <button class="ib ghide ${isHidden ? 'on' : ''}" data-act="hide" data-ck="${esc(gk)}" title="${isHidden ? '取消隐藏' : '隐藏这个提问'}">${isHidden ? ICON.eye : ICON.eyeOff}</button>
           ${g.tree.length ? `<button class="ib chev" data-act="toggle-g" data-ck="${esc(gk)}" title="${collapsed ? '展开' : '折叠'}">${collapsed ? ICON.right : ICON.down}</button>` : ''}
         </div>
-        <div class="gtext" data-act="goto-u" data-id="${g.id}" title="${esc(g.text.slice(0, 500))}">${highlight(g.text, q)}</div>
         ${!collapsed && tree.length ? `<div class="tree">${renderNodes(g, tree, q)}</div>` : ''}
       </div>`;
     }
     if (!shown) {
       if (!S.model.length) html = `<div class="empty">还没有找到对话内容。<br>开始提问后，这里会显示目录。</div>`;
+      else if (S.hidden.size && !S.showHidden && !q && !S.settings.starredOnly) html = `<div class="empty">所有提问都已隐藏。</div>`;
       else if (S.settings.starredOnly) html = `<div class="empty">还没有标记的提问。<br>鼠标移到提问上，点星星即可标记。</div>`;
       else html = `<div class="empty">没有匹配“${esc(S.outlineQuery)}”的内容。</div>`;
     }
     olist.innerHTML = html;
+    renderHiddenBar();
     S.activeId = null;
     updateActive();
+  }
+
+  function renderHiddenBar() {
+    const bar = $('#hbar');
+    const n = S.model.reduce(
+      (sum, g) => sum + (S.hidden.has('g:' + g.key) ? 1 : 0) + g.headings.filter((_, i) => S.hidden.has('h:' + g.key + ':' + i)).length,
+      0
+    );
+    if (!n) S.showHidden = false;
+    bar.hidden = !n;
+    bar.innerHTML = n ? `<span>已隐藏 ${n} 项</span><button id="hshow">${S.showHidden ? '收起' : '显示'}</button>` : '';
   }
 
   function findById(id) {
@@ -512,10 +639,22 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     return out;
   }
 
+  // 条目现在在页面上的元素，已卸载时返回 null
+  function liveEl(item, isGroup) {
+    const el = isGroup ? item.msg.el : item.msg.headings[item.mi] && item.msg.headings[item.mi].el;
+    return el && el.isConnected ? el : null;
+  }
+
   function jumpTo(el) {
-    if (!el || !el.isConnected) return;
+    clearInterval(edgeTimer);
     el.style.scrollMarginTop = SCROLL_OFFSET + 'px';
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.scrollIntoView({ block: 'start' });
+    // 虚拟列表测量高度后位置会变，再校正两次
+    [150, 450].forEach((ms) =>
+      setTimeout(() => {
+        if (el.isConnected && Math.abs(el.getBoundingClientRect().top - SCROLL_OFFSET) > 8) el.scrollIntoView({ block: 'start' });
+      }, ms)
+    );
     try {
       el.animate([{ backgroundColor: 'rgba(242,182,50,.35)' }, { backgroundColor: 'rgba(242,182,50,0)' }], {
         duration: 1600,
@@ -526,17 +665,97 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     }
   }
 
+  async function pinAndJump(id) {
+    const item = findById(id);
+    if (!item) return;
+    const isGroup = id[0] === 'u';
+    S.pin = { key: S.model[+id.slice(1).split('.')[0]].key, idx: isGroup ? null : item.idx };
+    updateActive();
+    scanMessages();
+    const seek = ++S.seek;
+    const found = liveEl(item, isGroup);
+    if (found) return jumpTo(found);
+
+    // 条目已被卸载：比较视口内消息的序号，二分滚动到它所在的位置
+    clearInterval(edgeTimer);
+    const sc = findScroller();
+    const target = item.msg.order;
+    let lo = 0;
+    let hi = sc.scrollHeight - sc.clientHeight;
+    for (let tries = 0; tries < 20; tries++) {
+      const orders = scanMessages()
+        .filter((m) => {
+          const r = m.el.getBoundingClientRect();
+          return r.bottom > 0 && r.top < innerHeight;
+        })
+        .map((m) => m.order);
+      const el = liveEl(item, isGroup);
+      if (el) return jumpTo(el);
+      if (orders.length && (target < Math.min(...orders) || target > Math.max(...orders))) {
+        const up = target < Math.min(...orders);
+        if (up) hi = sc.scrollTop;
+        else lo = sc.scrollTop;
+        // 第一步按序号比例估算；高度也是估算的，区间收窄后改为逐屏移动
+        if (tries === 0) sc.scrollTop = hi * (target / Math.max(1, ...S.model.map((g) => g.msg.order)));
+        else sc.scrollTop = hi - lo > sc.clientHeight ? (lo + hi) / 2 : sc.scrollTop + (up ? -0.7 : 0.7) * sc.clientHeight;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+      if (seek !== S.seek) return;
+    }
+    toast('没能定位到这条消息，请手动滚动到附近');
+  }
+
+  // 对话所在的滚动容器：两个网站都不是滚动整个页面
+  function findScroller() {
+    const known = S.scroller;
+    if (known && known.isConnected && known.getBoundingClientRect().width > 0) return known;
+    let el = inActivePane(qsaAll([...CFG.user, ...CFG.assistant]))[0];
+    for (; el && el !== document.body; el = el.parentElement) {
+      if (/auto|scroll/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 5) return (S.scroller = el);
+    }
+    return document.scrollingElement;
+  }
+  function scrollEdge(toTop) {
+    const sc = findScroller();
+    const target = () => (toTop ? 0 : sc.scrollHeight);
+    const stop = () => clearInterval(edgeTimer);
+    S.pin = null;
+    S.seek++;
+    clearInterval(edgeTimer);
+    sc.scrollTop = target();
+    // 虚拟列表加载新内容后高度会变，短时间内继续校正；用户滚动时立即停止
+    let tries = 0;
+    sc.addEventListener('wheel', stop, { passive: true, once: true });
+    edgeTimer = setInterval(() => {
+      if (++tries > 10) return stop();
+      sc.scrollTop = target();
+    }, 150);
+  }
+
   // 滚动时高亮当前位置
   function updateActive() {
     if (panel.hidden || S.settings.tab !== 'outline' || !S.model.length) return;
     const line = SCROLL_OFFSET + 40;
     let current = null;
-    for (const g of S.model) {
-      if (g.el.isConnected && g.el.getBoundingClientRect().top <= line) current = g.id;
-      else if (g.el.isConnected) break;
-      for (const n of flatNodes(g)) {
-        if (n.el.isConnected && n.el.getBoundingClientRect().top <= line) current = n.id;
+    const pinned = S.pin && S.model.find((g) => g.key === S.pin.key);
+    if (pinned) {
+      current = S.pin.idx === null ? pinned.id : `h${pinned.index}.${S.pin.idx}`;
+    } else {
+      for (const g of S.model) {
+        const anchors = [g.el, ...g.answers.map((a) => a.el)].filter((el) => el.isConnected);
+        if (!anchors.length) continue;
+        if (anchors[0].getBoundingClientRect().top > line) break;
+        current = g.id;
+        for (const n of flatNodes(g)) {
+          if (n.el.isConnected && n.el.getBoundingClientRect().top <= line) current = n.id;
+        }
       }
+    }
+    // 最后一个回答较短时到底也到不了判定线，这时直接高亮最后一项
+    const sc = findScroller();
+    if (!pinned && sc.scrollTop > 0 && sc.scrollHeight - sc.clientHeight - sc.scrollTop <= 4) {
+      const last = S.model.filter((g) => !S.hidden.has('g:' + g.key)).pop();
+      if (last) current = (flatNodes(last).pop() || last).id;
     }
     if (!current) current = S.model[0].id;
     // 当前标题被折叠或隐藏时，高亮最近的可见上级
@@ -558,6 +777,17 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       }
     }
   }
+  // 用户自己滚动或操作时恢复按位置高亮
+  ['wheel', 'touchmove', 'pointerdown', 'keydown'].forEach((t) =>
+    window.addEventListener(
+      t,
+      () => {
+        S.pin = null;
+        S.seek++;
+      },
+      { capture: true, passive: true }
+    )
+  );
   let rafPending = false;
   window.addEventListener(
     'scroll',
@@ -576,7 +806,13 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const t = e.target.closest('[data-act]');
     if (!t) return;
     const act = t.dataset.act;
-    if (act === 'star') {
+    if (act === 'hide') {
+      e.stopPropagation();
+      const ck = t.dataset.ck;
+      S.hidden.has(ck) ? S.hidden.delete(ck) : S.hidden.add(ck);
+      store.set(hiddenKey(), [...S.hidden]);
+      renderOutline();
+    } else if (act === 'star') {
       e.stopPropagation();
       const k = t.dataset.key;
       S.stars.has(k) ? S.stars.delete(k) : S.stars.add(k);
@@ -588,12 +824,16 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       S.collapsed.has(ck) ? S.collapsed.delete(ck) : S.collapsed.add(ck);
       renderOutline();
     } else if (act === 'goto-u') {
-      const g = findById(t.dataset.id);
-      if (g) jumpTo(g.el);
+      pinAndJump(t.dataset.id);
     } else if (act === 'goto-h') {
-      const n = findById(t.dataset.id);
-      if (n) jumpTo(n.el);
+      pinAndJump(t.dataset.id);
     }
+  });
+
+  $('#hbar').addEventListener('click', (e) => {
+    if (!e.target.closest('#hshow')) return;
+    S.showHidden = !S.showHidden;
+    renderOutline();
   });
 
   $('#depth').addEventListener('click', (e) => {
@@ -653,6 +893,8 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const tools = $('#tabtools');
     if (st.tab === 'outline') {
       tools.innerHTML = `
+        <button class="ib" data-tool="top" title="到顶部">${ICON.up2}</button>
+        <button class="ib" data-tool="bottom" title="到底部">${ICON.down2}</button>
         <button class="ib ${S.searchOpen ? 'on' : ''}" data-tool="search" title="搜索">${ICON.search}</button>
         <button class="ib" data-tool="expand" title="全部展开">${ICON.unfold}</button>
         <button class="ib" data-tool="collapse" title="全部折叠">${ICON.fold}</button>`;
@@ -668,7 +910,9 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const b = e.target.closest('[data-tool]');
     if (!b) return;
     const tool = b.dataset.tool;
-    if (tool === 'search') toggleOutlineSearch();
+    if (tool === 'top') scrollEdge(true);
+    else if (tool === 'bottom') scrollEdge(false);
+    else if (tool === 'search') toggleOutlineSearch();
     else if (tool === 'expand') setAllCollapsed(false);
     else if (tool === 'collapse') setAllCollapsed(true);
     else if (tool === 'new') openEditor(null);
@@ -694,6 +938,14 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     }
   }
   $('#close').addEventListener('click', () => setOpen(false));
+  panel.addEventListener('pointerdown', () => (S.pressing = true));
+  ['pointerup', 'pointercancel'].forEach((t) =>
+    window.addEventListener(t, () => {
+      if (!S.pressing) return;
+      S.pressing = false;
+      scheduleRefresh();
+    })
+  );
   fab.addEventListener('click', () => setOpen(true));
 
   const saveSettings = () => store.set('settings', S.settings);
@@ -1180,15 +1432,25 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
   async function refresh(force) {
     if (location.pathname !== S.path) {
       S.path = location.pathname;
-      S.collapsed.clear();
-      S.outlineQuery = '';
-      if (S.searchOpen) toggleOutlineSearch(false);
-      S.stars = new Set(await store.get(starKey(), []));
-      force = true;
+      // ChatGPT 项目里的对话打开后路径会多一段，但还是同一个对话
+      if (convKey() !== S.conv) {
+        S.conv = convKey();
+        S.collapsed.clear();
+        S.outlineQuery = '';
+        if (S.searchOpen) toggleOutlineSearch(false);
+        S.stars = new Set(await store.get(starKey(), []));
+        S.hidden = new Set(await store.get(hiddenKey(), []));
+        S.showHidden = false;
+        S.pin = null;
+        S.seek++;
+        force = true;
+      }
     }
     applyTheme();
     const model = buildModel();
     const sig = signature(model);
+    // 按下鼠标时不重绘，否则这次点击会落空；松开后再更新
+    if (!force && sig !== S.sig && S.pressing) return;
     S.model = model;
     if (!force && sig === S.sig) {
       updateActive();
@@ -1197,7 +1459,29 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     S.sig = sig;
     if (!panel.hidden && S.settings.tab === 'outline') renderOutline();
   }
-  const scheduleRefresh = debounce(() => refresh(false), 500);
+  // 滚动时页面一直在变：目录最多等 1.5 秒就更新一次
+  let refreshTimer;
+  let refreshWait = 0;
+  const scheduleRefresh = () => {
+    const now = Date.now();
+    refreshWait = refreshWait || now;
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      refreshWait = 0;
+      if (!document.hidden) refresh(false);
+    }, Math.max(0, Math.min(500, refreshWait + 1500 - now)));
+  };
+  // 消息可能很快被卸载，页面一变就尽快记下来，不等目录重绘
+  let scanTimer;
+  const onPageChange = () => {
+    scheduleRefresh();
+    if (scanTimer) return;
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      if (!document.hidden) scanMessages();
+    }, 200);
+  };
+  document.addEventListener('visibilitychange', () => document.hidden || scheduleRefresh());
 
   async function init() {
     S.settings = { ...DEFAULT_SETTINGS, ...(await store.get('settings', {})) };
@@ -1209,12 +1493,13 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     S.prompts = prompts;
     S.varMemory = await store.get('varMemory', {});
     S.stars = new Set(await store.get(starKey(), []));
+    S.hidden = new Set(await store.get(hiddenKey(), []));
     document.documentElement.appendChild(host);
     applyTheme();
     syncChrome();
     await refresh(true);
     if (S.settings.tab === 'prompts') renderPrompts();
-    new MutationObserver(scheduleRefresh).observe(document.body, {
+    new MutationObserver(onPageChange).observe(document.body, {
       childList: true,
       subtree: true,
       characterData: true,
