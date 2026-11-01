@@ -10,10 +10,10 @@
 
 ## 安装
 
-1. 下载本项目并解压（或 `git clone`）。
+1. 从 [Releases](https://github.com/Mangteng1994/chat-outline/releases/latest) 下载 `chat-outline-*.zip` 并解压（也可以 `git clone` 本项目）。
 2. 在 Chrome 地址栏打开 `chrome://extensions`。
 3. 打开右上角的 **开发者模式**。
-4. 点 **加载已解压的扩展程序**，选择本项目文件夹（里面有 `manifest.json` 的那一层）。
+4. 点 **加载已解压的扩展程序**，选择解压后的文件夹（里面有 `manifest.json` 的那一层）。
 5. 打开或刷新支持的 AI 网站，右侧会出现面板。
 
 Edge 等基于 Chromium 的浏览器同样可以用这种方式安装。
