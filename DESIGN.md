@@ -4,7 +4,7 @@
 
 ## 目标
 
-一个扩展同时满足四件事：支持 Claude 和 ChatGPT、多级标题目录、星标提问、提示词库。
+一个扩展同时满足四件事：支持 Claude、ChatGPT、DeepSeek、Gemini、Kimi 和豆包，多级标题目录、星标提问、提示词库。
 
 ## 界面与交互（已确定）
 
@@ -44,7 +44,7 @@
 
 ### `//` 快速插入
 
-- 在输入框里光标前是 `//关键词`（行首或前面是空白）时，在输入框上方弹出最多 8 条匹配的提示词。
+- 在输入框里光标前是 `//关键词` 时（任意位置都可以，只排除网址里的 `://`），在输入框上方弹出最多 8 条匹配的提示词。
 - ↑↓ 选择，回车或 Tab 插入，Esc 关闭，也可以用鼠标点。
 - 插入时先删除 `//关键词`，再插入内容（有变量则先弹框）。
 
@@ -60,14 +60,17 @@
 - 点击目录后锁定高亮到被点的条目，用户滚动或操作时解除。提问文字有缓存，标题用 `textContent`，避免刷新时反复触发页面排版。
 - 两个网站都是虚拟滚动，远处的消息会被卸载。`scanMessages` 把页面上的消息按对话写入内存缓存（id 取 `data-turn-key`，序号取 `SITES.*.order`），目录由缓存按序号生成，所以不随滚动变化。
 - 点击已卸载的条目时，比较视口内消息的序号，二分滚动到目标位置；用户滚动或操作时停止。
+- DeepSeek 的绝对序号来自虚拟列表的 `data-virtual-list-item-key`；Kimi 来自消息 id 开头的毫秒时间戳。
+- Gemini 和豆包页面上没有绝对序号，消息 id 也不递增，只用它标识消息，序号由 `fillOrders` 按页面上的前后邻居推算。
 - 每组的 key 是提问文字的哈希加出现次序，用于折叠状态和星标。
 - `MutationObserver` 监听页面变化，500ms 防抖后重建；内容签名不变时不重绘。每秒检查一次 URL，切换对话时重置折叠状态并读取该对话的星标。
 - 写入输入框：先恢复最后记录的光标位置，`document.execCommand('insertText')` 插入（ProseMirror 能正确识别换行为段落）；失败时模拟粘贴事件。`textarea` 则直接设置值并触发 `input` 事件。
-- 存储（`chrome.storage.local`）：`settings`、`prompts`、`varMemory`、`stars:<域名><路径>`、`hidden:<域名><路径>`。
+- 存储（`chrome.storage.local`）：`settings`、`prompts`、`varMemory`、`promptTombstones`、`marks:<域名>:<对话 id>`（星标和隐藏）、同步相关的 `syncConfig`、`syncEnabled`、`syncScopes`、`syncStatus`。
 
-## 提示词同步
+## 同步
 
-- 网盘文件是 `chat-outline/prompts.json`（`{app, version, prompts, tombstones}`）。个人数据只在浏览器存储和用户的网盘里，项目里没有提示词。
+- 提示词在 `chat-outline/prompts.json`（`{app, version, prompts, tombstones}`），手机端也读写这个文件，格式不能随意改。星标和隐藏在 `chat-outline/outline.json`（`{app, version, conversations}`），只有电脑同步。两类内容可以在设置页分别开关。
+- 星标和隐藏每项是 `{on, at}`，同一项取 `at` 较新的，取消也算修改，取消的记录保留 180 天。`/new` 这类非对话页面不同步。旧版本按路径保存的数据由后台迁移。个人数据只在浏览器存储和用户的网盘里，项目里没有提示词。
 - 合并：按 `id` 取 `updatedAt` 较新的；`promptTombstones` 记录删除，比提示词新时删除生效，保留 180 天。
 - 写入用 `If-Match` 防止覆盖其他电脑的修改，返回 412 时重新读取并合并。网盘文件损坏时报错，不覆盖。
 - 时机：打开页面或切回标签页时拉取（最多每分钟一次），修改后 3 秒推送，也可手动同步。
@@ -91,5 +94,5 @@ v1.0.1 在真实的 claude.ai 和 chatgpt.com 上（Chrome 151 内核）验证�
 - 标题也可以加星。
 - 提示词排序（置顶、按使用次数）。
 - 发布到 Chrome 应用商店。
-- 同步星标和隐藏记录。
+- 星标和隐藏改用平台的消息 ID 作为条目标识，避免重复提问对应错。
 - 网盘文件加密。

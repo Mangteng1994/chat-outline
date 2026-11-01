@@ -11,9 +11,16 @@ function describe(status) {
 }
 
 async function load() {
-  const { syncConfig: cfg, syncStatus: status } = await chrome.storage.local.get(['syncConfig', 'syncStatus']);
-  $('url').value = cfg ? cfg.url : 'https://dav.jianguoyun.com/dav/';
+  const { syncConfig: cfg, syncStatus: status, syncScopes: scopes = {} } = await chrome.storage.local.get([
+    'syncConfig',
+    'syncStatus',
+    'syncScopes',
+  ]);
+  $('scope-prompts').checked = scopes.prompts !== false;
+  $('scope-outline').checked = scopes.outline !== false;
   if (!cfg) return;
+  $('url').value = cfg.url;
+  $('name').value = cfg.name || '';
   $('user').value = cfg.user;
   $('pass').value = cfg.pass;
   $('off').hidden = false;
@@ -34,12 +41,13 @@ $('form').addEventListener('submit', async (e) => {
   if (!granted) return show('没有授权访问这个地址，无法同步', false);
 
   const href = url.href.endsWith('/') ? url.href : url.href + '/';
-  const cfg = { url: href, user: $('user').value.trim(), pass: $('pass').value };
+  const cfg = { name: $('name').value.trim(), url: href, user: $('user').value.trim(), pass: $('pass').value };
   show('正在连接网盘…');
   const test = await chrome.runtime.sendMessage({ type: 'test-sync', cfg });
   if (!test.ok) return show('连接失败：' + test.error, false);
 
-  await chrome.storage.local.set({ syncConfig: cfg, syncEnabled: true });
+  const syncScopes = { prompts: $('scope-prompts').checked, outline: $('scope-outline').checked };
+  await chrome.storage.local.set({ syncConfig: cfg, syncEnabled: true, syncScopes });
   show('正在同步…');
   const status = await chrome.runtime.sendMessage({ type: 'sync', reason: 'manual' });
   show(describe(status), status.ok);
@@ -52,7 +60,7 @@ $('off').addEventListener('click', async () => {
   $('user').value = '';
   $('pass').value = '';
   $('off').hidden = true;
-  show('已关闭同步。本地和网盘里的提示词都还在。', true);
+  show('已关闭同步。本地和网盘里的数据都还在。', true);
 });
 
 load();

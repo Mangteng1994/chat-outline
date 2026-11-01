@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>提示词同步设置</title>
+    <title>同步设置</title>
     <style>
       :root { color-scheme: light dark; --bg:#fff; --tx:#1f1f1e; --tx2:#5f5e5a; --bd:rgba(0,0,0,.18); --ok:#2b6f3e; --err:#b42318; }
       @media (prefers-color-scheme: dark) { :root { --bg:#262624; --tx:#ececea; --tx2:#b4b2a9; --bd:rgba(255,255,255,.2); --ok:#9fd9b0; --err:#f19a90; } }
@@ -14,6 +14,9 @@
       p { color:var(--tx2); margin:0 0 16px; }
       label { display:block; font-size:13px; color:var(--tx2); margin:14px 0 4px; }
       input { width:100%; padding:8px 10px; font:inherit; color:inherit; background:transparent; border:1px solid var(--bd); border-radius:8px; }
+      .req { color:var(--err); margin-left:3px; }
+      label.check { display:flex; align-items:center; gap:8px; margin:6px 0; color:var(--tx); font-size:14px; }
+      label.check input { width:auto; }
       .btns { display:flex; gap:8px; margin-top:18px; }
       button { padding:7px 16px; font:inherit; color:inherit; background:transparent; border:1px solid var(--bd); border-radius:8px; cursor:pointer; }
       button.pri { background:var(--tx); color:var(--bg); border-color:var(--tx); }
@@ -26,22 +29,27 @@
   </head>
   <body>
     <main>
-      <h1>提示词同步</h1>
-      <p>不同电脑填同一套配置，提示词就会自动同步。数据只存放在你自己的网盘里。</p>
+      <h1>同步设置</h1>
+      <p>不同设备填同一套配置，数据就会自动同步，只存放在你自己的网盘里。</p>
       <form id="form">
-        <label for="url">WebDAV 地址</label>
-        <input id="url" required placeholder="https://dav.jianguoyun.com/dav/" />
-        <label for="user">账号</label>
-        <input id="user" required autocomplete="off" placeholder="坚果云登录邮箱" />
-        <label for="pass">应用密码</label>
-        <input id="pass" type="password" required autocomplete="new-password" placeholder="第三方应用密码，不是登录密码" />
+        <label for="url">WebDAV 地址<span class="req">*</span></label>
+        <input id="url" required placeholder="例如：https://dav.jianguoyun.com/dav/" />
+        <label for="user">账号<span class="req">*</span></label>
+        <input id="user" required autocomplete="off" placeholder="网盘登录账号" />
+        <label for="name">应用名称</label>
+        <input id="name" autocomplete="off" placeholder="选填，用于备注" />
+        <label for="pass">应用密码<span class="req">*</span></label>
+        <input id="pass" type="password" required autocomplete="new-password" placeholder="网盘生成的第三方应用密码，不是登录密码" />
+        <label>同步内容</label>
+        <label class="check"><input id="scope-prompts" type="checkbox" checked /> 提示词（手机端也会同步）</label>
+        <label class="check"><input id="scope-outline" type="checkbox" checked /> 星标和隐藏（只在电脑之间同步）</label>
         <div class="btns">
           <button class="pri" type="submit">保存并同步</button>
           <button id="off" type="button" hidden>关闭同步</button>
         </div>
       </form>
       <div id="msg"></div>
-      <p class="note">坚果云：网页版右上角账号 → 账户信息 → 安全选项 → 第三方应用管理，添加应用后生成应用密码。配置只保存在这个浏览器里。</p>
+      <p class="note">获取应用密码（以坚果云为例）：登录网页版，进入账户信息 → 安全选项 → 第三方应用管理，添加应用后生成密码。以上配置仅保存在当前浏览器中。</p>
     </main>
     <script src="options.js"></script>
   </body>

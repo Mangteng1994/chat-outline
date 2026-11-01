@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "对话大纲 + 提示词库",
-  "version": "1.2.0",
-  "description": "为 Claude 和 ChatGPT 网页版添加按提问分组的多级标题目录，以及可一键插入的提示词库。数据保存在本地，可选同步到自己的网盘。",
+  "version": "1.4.0",
+  "description": "为 Claude、ChatGPT、DeepSeek、Gemini、Kimi 和豆包网页版添加多级目录和提示词库。数据保存在本地，可选同步到自己的网盘。",
   "permissions": [
     "storage"
   ],
@@ -24,12 +24,19 @@
       "matches": [
         "https://claude.ai/*",
         "https://chatgpt.com/*",
-        "https://chat.openai.com/*"
+        "https://chat.openai.com/*",
+        "https://chat.deepseek.com/*",
+        "https://gemini.google.com/*",
+        "https://www.kimi.com/*",
+        "https://kimi.com/*",
+        "https://kimi.moonshot.cn/*",
+        "https://www.doubao.com/*"
       ],
       "js": [
         "content.js"
       ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzTpPVK2s8I/e9BI9Ub2LDuQlq0antm9EzPFwkGo6xKKbNrpLE6WuxEbnh2H5dK+pFeHC5b7q2DQwKCFQ1BZOL7AMlHlKA82BLV8+vFJKSIYt+eSUXYZHDYQFApSPvlwf3kBlgGqslvSlqed3NeJ2y0vNgHFkSBLsrPHcMtxLeMgKASRg7tb5a8uXomseVCth0NFcjDqKhOXFauC1E+RyaucbWGT2up1k3F3JAL+uiLIIEu3JgxgvoRXxfbALJ4DMY5/PO1uWe1XTMsK8Zk6tTQCw+MN+9Xo6jDeGmoUSkFua3d2nRjWPFdTkgjwhJNpbyiehRqq3kAW/uNXmEl0dzwIDAQAB"
 }

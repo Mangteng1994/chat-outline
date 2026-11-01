@@ -1,6 +1,6 @@
 /*
  * 对话大纲 + 提示词库
- * 为 claude.ai 与 chatgpt.com 添加：按提问分组的多级标题目录、星标、提示词库（含 {{变量}} 与 // 快速插入）。
+ * 为 Claude、ChatGPT、DeepSeek、Gemini、Kimi 和豆包网页版添加：按提问分组的多级标题目录、星标、提示词库（含 {{变量}} 与 // 快速插入）。
  * 数据保存在 chrome.storage.local；只有用户设置了自己的网盘时，提示词才会同步过去（见 background.js）。
  */
 (() => {
@@ -36,11 +36,55 @@
         return m ? +m[1] : null;
       },
     },
+    deepseek: {
+      user: ['.fbb737a4', '.ds-message:not(:has(.ds-markdown))'],
+      assistant: ['.ds-message .ds-markdown', '.ds-markdown'],
+      composer: ['textarea#chat-input', 'textarea'],
+      order: (el) => {
+        const row = el.closest('[data-virtual-list-item-key]');
+        return row ? +row.getAttribute('data-virtual-list-item-key') : null;
+      },
+    },
+    gemini: {
+      user: ['user-query .query-text', 'user-query'],
+      assistant: ['model-response .markdown', 'model-response'],
+      composer: ['rich-textarea .ql-editor[contenteditable="true"]', '.ql-editor[contenteditable="true"]'],
+      // 页面上没有绝对序号，id 也不递增，只能标识消息；位置由 fillOrders 推算
+      turn: (el) => el.closest('.conversation-container')?.id,
+    },
+    kimi: {
+      // 提问可以只有图片，所以取整个气泡，操作按钮的文字由 HIDDEN_SEL 去掉
+      user: ['.segment-user'],
+      assistant: ['.segment-assistant'],
+      composer: ['.chat-input-editor[contenteditable="true"]', '[data-lexical-editor="true"]', 'textarea'],
+      turn: (el) => el.closest('[data-archer-id]')?.getAttribute('data-archer-id'),
+      // 消息 id 开头是毫秒时间戳，同一轮的提问和回答相同，回答排在后面
+      order: (el) => {
+        const m = (CFG.turn(el) || '').match(/^([0-9a-f]{8})-([0-9a-f]{4})/);
+        return m ? parseInt(m[1] + m[2], 16) * 2 + (el.matches('.segment-assistant') ? 1 : 0) : null;
+      },
+    },
+    doubao: {
+      user: ['[data-testid="send_message"]', '[data-message-role="user"]'],
+      assistant: ['[data-testid="receive_message"]', '[data-message-role="assistant"]'],
+      composer: ['div.ProseMirror[contenteditable="true"]', 'textarea[data-testid="chat_input_input"]', 'textarea'],
+      // 消息 id 不递增，不能当序号；位置由 fillOrders 推算
+      turn: (el) => el.querySelector('[data-message-id]')?.getAttribute('data-message-id'),
+    },
   };
-  const SITE = /(^|\.)claude\.ai$/.test(location.hostname) ? 'claude' : 'chatgpt';
+  const SITE_HOSTS = [
+    ['claude', /(^|\.)claude\.ai$/],
+    ['deepseek', /(^|\.)deepseek\.com$/],
+    ['gemini', /^gemini\.google\.com$/],
+    ['kimi', /(^|\.)(kimi\.com|kimi\.moonshot\.cn)$/],
+    ['doubao', /(^|\.)doubao\.com$/],
+  ];
+  const SITE = (SITE_HOSTS.find(([, re]) => re.test(location.hostname)) || ['chatgpt'])[0];
   const CFG = SITES[SITE];
 
   const HEADING_SEL = 'h1,h2,h3,h4,h5,h6';
+  // 不属于消息内容的隐藏文字和按钮
+  const HIDDEN_SEL = '.sr-only, .cdk-visually-hidden, .segment-user-action-row, .segment-user-actions, [data-testid="send_message"] time';
   const SCROLL_OFFSET = 90; // 跳转时为顶部固定栏预留的距离
   const DEFAULT_SETTINGS = { open: true, tab: 'outline', depth: 3, starredOnly: false };
 
@@ -113,11 +157,11 @@
     }
     return [];
   };
-  // 读取元素文字，去掉屏幕阅读器专用的隐藏文字（如 ChatGPT 的“You said:”）
+  // 读取元素文字，去掉屏幕阅读器专用的隐藏文字（如 ChatGPT 的“You said:”、Gemini 的“你说”）
   const visibleText = (el) => {
-    if (!el.querySelector('.sr-only')) return el.innerText || el.textContent;
+    if (!el.querySelector(HIDDEN_SEL)) return el.innerText || el.textContent;
     const c = el.cloneNode(true);
-    c.querySelectorAll('.sr-only').forEach((x) => x.remove());
+    c.querySelectorAll(HIDDEN_SEL).forEach((x) => x.remove());
     return c.textContent;
   };
   const inActivePane = (els) => {
@@ -167,7 +211,8 @@
     unfold: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>',
     list: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>',
     down2: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M7 11l5 5 5-5M5 20h14"/></svg>',
-    sync: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14-4.5L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4.5l2-2.500M20 20v-5h-5"/></svg>',
+    reload: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.4-5.7L20 8.5M20 4v4.5h-4.5"/></svg>',
+    sync: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.5 1.5A3.8 3.8 0 0 1 17 18"/><path d="M12 11v8M9 14l3-3 3 3"/></svg>',
     eye: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>',
     eyeOff: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l16 16M10 5.8a9 9 0 0 1 2-.3c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-3 3.7M6.5 7.6A16 16 0 0 0 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.2-1"/></svg>',
     up2: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V8M7 13l5-5 5 5M5 4h14"/></svg>',
@@ -177,7 +222,7 @@
   // 状态
   // ---------------------------------------------------------------------------
   // 对话 id；不在对话页时用路径，例如 /new
-  const convKey = () => (location.pathname.match(/\/(?:c|chat)\/([^/]+)/) || [])[1] || location.pathname;
+  const convKey = () => (location.pathname.match(/\/(?:c|chat|app)\/(?:s\/)?([^/]+)/) || [])[1] || location.pathname;
   const S = {
     settings: { ...DEFAULT_SETTINGS },
     prompts: [],
@@ -185,6 +230,7 @@
     syncEnabled: false,
     syncStatus: null,
     stars: new Set(),
+    marks: { stars: {}, hidden: {} },
     hidden: new Set(), // 隐藏的条目，key 与折叠状态相同（g:… / h:…）
     showHidden: false,
     collapsed: new Set(),
@@ -208,8 +254,8 @@
     picker: null, // // 快速插入的状态
     varMemory: {},
   };
-  const starKey = () => 'stars:' + location.hostname + location.pathname;
-  const hiddenKey = () => 'hidden:' + location.hostname + location.pathname;
+  // 星标和隐藏按对话保存，每项记录状态和修改时间，同步时才能判断取消和标记哪个新
+  const marksKey = () => 'marks:' + location.hostname + ':' + convKey();
 
   // ---------------------------------------------------------------------------
   // 界面（Shadow DOM，样式与网页互不影响）
@@ -324,7 +370,9 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
 .pi .ptag { font-size:11px; color:var(--tx3); flex:none; }
 .pi.on { background:var(--ac-bg); color:var(--ac-tx); }
 .pi.on .ptag { color:var(--ac-tx); }
-.syncline { flex:none; padding:5px 12px 7px; font-size:12px; color:var(--tx3); text-align:left; border-top:1px solid var(--bd); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.syncbar { flex:none; display:flex; align-items:center; gap:4px; padding:3px 8px 3px 12px; border-top:1px solid var(--bd); }
+.syncbar[hidden] { display:none; }
+.syncline { flex:1; min-width:0; font-size:12px; color:var(--tx3); text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .syncline:hover { color:var(--tx); }
 .syncline.err { color:var(--danger); }
 .pfoot { font-size:11px; color:var(--tx3); padding:4px 8px 2px; border-top:1px solid var(--bd); margin-top:4px; }
@@ -354,6 +402,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
         </div>
         <span class="sp"></span>
         <button class="chip" id="starred" title="只显示标了星的提问">${ICON.star}<span>只看标记</span></button>
+        <button class="ib" id="reoutline" title="刷新目录">${ICON.reload}</button>
       </div>
       <div class="searchrow" id="osearch" hidden><input id="oq" placeholder="搜索提问和标题" /></div>
       <div class="hbar" id="hbar" hidden></div>
@@ -364,9 +413,12 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
         <div class="searchrow"><input id="pq" placeholder="搜索提示词" /></div>
         <div class="tags" id="ptags"></div>
         <div class="body" id="plist"></div>
-        <button class="syncline" id="syncline" hidden></button>
       </div>
       <div class="body form" id="pform" hidden></div>
+    </div>
+    <div class="syncbar" id="syncbar" hidden>
+      <button class="syncline" id="syncline"></button>
+      <button class="ib" id="syncnow" title="立即同步">${ICON.sync}</button>
     </div>
   </div>
   <div class="picker" id="picker" hidden></div>
@@ -419,6 +471,23 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
   // ---------------------------------------------------------------------------
   // 读取对话结构
   // ---------------------------------------------------------------------------
+  // 网站没有绝对序号时，按新消息在页面上的前后邻居确定位置，这样往上滚动发现的消息也能排在前面
+  function fillOrders(live, cache) {
+    for (let i = 0; i < live.length; i++) {
+      if (live[i].order !== undefined) continue;
+      let end = i;
+      while (end < live.length && live[end].order === undefined) end++;
+      const count = end - i;
+      const before = i ? live[i - 1].order : null;
+      const after = end < live.length ? live[end].order : null;
+      const known = [...cache.values()].map((m) => m.order).filter((o) => o !== undefined);
+      const low = before ?? (after !== null ? after - count - 1 : Math.max(0, ...known));
+      const step = after !== null ? (after - low) / (count + 1) : 1;
+      for (let k = 0; k < count; k++) live[i + k].order = low + step * (k + 1);
+      i = end - 1;
+    }
+  }
+
   // 把页面上当前存在的消息写入缓存，返回这些消息
   function scanMessages() {
     const conv = convKey();
@@ -435,10 +504,16 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
 
     const live = [];
     const counts = {};
+    let lastUser = 'top';
     for (const { type, el } of items) {
-      const order = CFG.order(el);
-      const turn = el.closest('[data-turn-key]');
-      const slot = (turn ? turn.getAttribute('data-turn-key') : 'o' + (order ?? live.length)) + ':' + type;
+      const order = CFG.order ? CFG.order(el) : null;
+      const turn = CFG.turn ? CFG.turn(el) : el.closest('[data-turn-key]')?.getAttribute('data-turn-key');
+      let slot;
+      if (turn) slot = turn + ':' + type;
+      else if (order !== null) slot = conv + ':o' + order + ':' + type; // 序号只在同一对话内唯一
+      else if (type === 'user') slot = 'u' + hash(userText(el).slice(0, 300)) + ':user';
+      else slot = lastUser + ':after'; // 回答的文字还在变，用它前面的提问来标识
+      if (type === 'user') lastUser = slot;
       const sub = (counts[slot] = (counts[slot] || 0) + 1) - 1;
       const id = slot + ':' + sub;
       // 切换对话的瞬间页面上可能还是旧对话
@@ -450,7 +525,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       S.owners.set(id, conv);
       const msg = cache.get(id) || { id, type, sub, seq: S.seq++, headings: [] };
       msg.el = el;
-      msg.order = order ?? msg.order ?? msg.seq;
+      msg.order = order ?? msg.order;
       if (type === 'user') {
         msg.text = userText(el) || '（空白提问）';
         if (!msg.key) {
@@ -469,11 +544,15 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       cache.set(id, msg);
       live.push(msg);
     }
+    fillOrders(live, cache);
     // 重新生成或编辑后，同一位置换了新消息，旧的要去掉
     const liveIds = new Set(live.map((m) => m.id));
     const taken = new Set(live.map((m) => m.order + m.type));
+    const first = live.length ? live[0].order : 0;
+    const last = live.length ? live[live.length - 1].order : 0;
     for (const m of cache.values()) {
-      if (!liveIds.has(m.id) && taken.has(m.order + m.type)) {
+      // 页面上的消息是连续的，夹在中间却不在页面上的也已被替换
+      if (!liveIds.has(m.id) && (taken.has(m.order + m.type) || (m.order > first && m.order < last))) {
         cache.delete(m.id);
         S.owners.delete(m.id);
       }
@@ -604,6 +683,20 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     renderHiddenBar();
     S.activeId = null;
     updateActive();
+  }
+
+  function applyMarks(marks) {
+    S.marks = { stars: {}, hidden: {}, ...marks };
+    const onKeys = (items) => Object.keys(items).filter((k) => items[k].on);
+    S.stars = new Set(onKeys(S.marks.stars));
+    S.hidden = new Set(onKeys(S.marks.hidden));
+  }
+  function toggleMark(kind, key) {
+    const item = S.marks[kind][key];
+    S.marks[kind][key] = { on: !(item && item.on), at: Date.now() };
+    store.set(marksKey(), S.marks);
+    applyMarks(S.marks);
+    queueSync();
   }
 
   function renderHiddenBar() {
@@ -800,14 +893,12 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     if (act === 'hide') {
       e.stopPropagation();
       const ck = t.dataset.ck;
-      S.hidden.has(ck) ? S.hidden.delete(ck) : S.hidden.add(ck);
-      store.set(hiddenKey(), [...S.hidden]);
+      toggleMark('hidden', ck);
       renderOutline();
     } else if (act === 'star') {
       e.stopPropagation();
       const k = t.dataset.key;
-      S.stars.has(k) ? S.stars.delete(k) : S.stars.add(k);
-      store.set(starKey(), [...S.stars]);
+      toggleMark('stars', k);
       renderOutline();
     } else if (act === 'toggle-g' || act === 'toggle-h') {
       e.stopPropagation();
@@ -834,6 +925,10 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     saveSettings();
     syncChrome();
     renderOutline();
+  });
+  $('#reoutline').addEventListener('click', async () => {
+    await refresh(true);
+    toast('目录已刷新');
   });
   $('#starred').addEventListener('click', () => {
     S.settings.starredOnly = !S.settings.starredOnly;
@@ -894,7 +989,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
         <button class="ib" data-tool="new" title="新建提示词">${ICON.plus}</button>
         <button class="ib" data-tool="export" title="导出提示词">${ICON.down2}</button>
         <button class="ib" data-tool="import" title="导入提示词">${ICON.up2}</button>
-        ${hasChromeStorage ? `<button class="ib" data-tool="sync" title="立即同步">${ICON.sync}</button>` : ''}`;
+`;
     }
   }
 
@@ -910,7 +1005,6 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     else if (tool === 'new') openEditor(null);
     else if (tool === 'export') exportPrompts();
     else if (tool === 'import') $('#file').click();
-    else if (tool === 'sync') syncNow();
   });
   root.querySelectorAll('.tab').forEach((t) =>
     t.addEventListener('click', () => {
@@ -1196,7 +1290,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     if (!hasChromeStorage) return;
     const st = S.syncStatus;
     const failed = S.syncEnabled && st && !st.ok;
-    line.hidden = false;
+    $('#syncbar').hidden = false;
     line.classList.toggle('err', !!failed);
     if (!S.syncEnabled) line.textContent = '同步未开启，点此设置';
     else if (!st) line.textContent = '等待同步…';
@@ -1208,6 +1302,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     line.title = '打开同步设置';
   }
   $('#syncline').addEventListener('click', () => sendBackground({ type: 'open-sync-settings' }));
+  $('#syncnow').addEventListener('click', syncNow);
 
   async function startSync() {
     if (!hasChromeStorage) return;
@@ -1221,6 +1316,10 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       if (changes.prompts && JSON.stringify(changes.prompts.newValue) !== JSON.stringify(S.prompts)) {
         S.prompts = changes.prompts.newValue || [];
         if (S.settings.tab === 'prompts' && !S.editing) renderPrompts();
+      }
+      if (changes[marksKey()]) {
+        applyMarks(changes[marksKey()].newValue || {});
+        if (S.settings.tab === 'outline') renderOutline();
       }
       if (changes.syncEnabled) S.syncEnabled = !!changes.syncEnabled.newValue;
       if (changes.syncStatus) S.syncStatus = changes.syncStatus.newValue || null;
@@ -1380,15 +1479,21 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const sel = getSelection();
     if (!sel.rangeCount || !sel.isCollapsed) return '';
     const node = sel.anchorNode;
-    if (!node || node.nodeType !== 3) return '';
-    return node.textContent.slice(0, sel.anchorOffset);
+    if (!node || !el.contains(node)) return '';
+    if (node.nodeType === 3) return node.textContent.slice(0, sel.anchorOffset);
+    // 豆包的编辑器在 input 事件期间会重排文字节点，选区短暂落在段落上
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.setEnd(node, sel.anchorOffset);
+    return range.toString();
   }
 
   function checkPicker(target) {
     const el = composerOf(target);
     if (!el) return closePicker();
     const before = textBeforeCaret(el);
-    const m = before.match(/(?:^|\s)\/\/([^\s/]{0,30})$/);
+    // 任意位置都能呼出，只排除网址里的 ://
+    const m = before.match(/(?:^|[^:/])\/\/([^\s/]{0,30})$/);
     if (!m) return closePicker();
     const query = m[1];
     const items = S.prompts.filter((p) => matchPrompt(p, query)).slice(0, 8);
@@ -1423,7 +1528,8 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     picker.hidden = true;
   }
 
-  function choosePicker(i) {
+  const nextTask = () => new Promise((r) => setTimeout(r, 30));
+  async function choosePicker(i) {
     const P = S.picker;
     if (!P || !P.items[i]) return;
     const p = P.items[i];
@@ -1442,7 +1548,9 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     } else {
       const sel = getSelection();
       for (let k = 0; k < n; k++) sel.modify('extend', 'backward', 'character');
+      await nextTask(); // Kimi 的编辑器要等选区同步后才能删除
       document.execCommand('delete');
+      await nextTask();
       if (sel.rangeCount) S.caret = { el, range: sel.getRangeAt(0).cloneRange() };
     }
     usePrompt(p);
@@ -1498,8 +1606,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
         S.collapsed.clear();
         S.outlineQuery = '';
         if (S.searchOpen) toggleOutlineSearch(false);
-        S.stars = new Set(await store.get(starKey(), []));
-        S.hidden = new Set(await store.get(hiddenKey(), []));
+        applyMarks(await store.get(marksKey(), {}));
         S.showHidden = false;
         S.pin = null;
         S.seek++;
@@ -1556,8 +1663,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       store.set('promptTombstones', S.tombstones);
     }
     S.varMemory = await store.get('varMemory', {});
-    S.stars = new Set(await store.get(starKey(), []));
-    S.hidden = new Set(await store.get(hiddenKey(), []));
+    applyMarks(await store.get(marksKey(), {}));
     document.documentElement.appendChild(host);
     applyTheme();
     syncChrome();
