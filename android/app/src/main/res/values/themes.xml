@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.ChatOutline" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">chat-outline</string>
+    <string name="a11y_description">仅在你点击提示词时，把提示词填入当前输入框。不读取、不保存、不上传其他屏幕内容。</string>
+</resources>
