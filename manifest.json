@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "对话大纲 + 提示词库",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "description": "为 Claude、ChatGPT、DeepSeek、Gemini、Kimi 和豆包网页版添加多级目录和提示词库。数据保存在本地，可选同步到自己的网盘。",
   "permissions": [
     "storage"

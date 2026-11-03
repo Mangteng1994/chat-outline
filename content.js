@@ -30,11 +30,13 @@
       composer: ['#prompt-textarea', 'div.ProseMirror[contenteditable="true"]', 'form textarea'],
       // 切换对话后旧对话仍留在页面的隐藏容器里，只读取可见容器中的消息
       pane: '[data-app-action-timeline-scroll]',
-      order: (el) => {
-        const turn = el.closest('[data-content-search-turn-key]');
-        const m = turn && turn.getAttribute('data-content-search-turn-key').match(/(\d+)$/);
-        return m ? +m[1] : null;
+      // 页面上的 fallback-turn-N 只是当前加载范围内的位置，加载更早的消息后会指向别的消息，
+      // 所以用消息 id 标识，位置由 fillOrders 推算
+      turn: (el) => {
+        const ids = el.closest('[data-chatgpt-search-message-ids]')?.getAttribute('data-chatgpt-search-message-ids');
+        return (ids && ids.trim().split(/\s+/)[0]) || chatgptRound(el);
       },
+      round: (el) => chatgptRound(el),
     },
     deepseek: {
       user: ['.fbb737a4', '.ds-message:not(:has(.ds-markdown))'],
@@ -70,8 +72,15 @@
       composer: ['div.ProseMirror[contenteditable="true"]', 'textarea[data-testid="chat_input_input"]', 'textarea'],
       // 消息 id 不递增，不能当序号；位置由 fillOrders 推算
       turn: (el) => el.querySelector('[data-message-id]')?.getAttribute('data-message-id'),
+      // 消息行是绝对定位的虚拟列表，元素在文档中的先后不一定是显示顺序
+      visual: true,
     },
   };
+  // 同一轮提问和回答共用的标识（提问的消息 id）；提问还没加载时页面给的是 fallback-turn-N，不能用
+  function chatgptRound(el) {
+    const key = el.closest('[data-turn-key]')?.getAttribute('data-turn-key');
+    return key && !key.startsWith('fallback') ? key : null;
+  }
   const SITE_HOSTS = [
     ['claude', /(^|\.)claude\.ai$/],
     ['deepseek', /(^|\.)deepseek\.com$/],
@@ -84,7 +93,7 @@
 
   const HEADING_SEL = 'h1,h2,h3,h4,h5,h6';
   // 不属于消息内容的隐藏文字和按钮
-  const HIDDEN_SEL = '.sr-only, .cdk-visually-hidden, .segment-user-action-row, .segment-user-actions, [data-testid="send_message"] time';
+  const HIDDEN_SEL = '.sr-only, .cdk-visually-hidden, .segment-user-action-row, .segment-user-actions, [data-testid="send_message"] time, button';
   const SCROLL_OFFSET = 90; // 跳转时为顶部固定栏预留的距离
   const DEFAULT_SETTINGS = { open: true, tab: 'outline', depth: 3, starredOnly: false };
 
@@ -194,7 +203,8 @@
   const userTexts = new WeakMap();
   const userText = (el) => {
     if (userTexts.has(el)) return userTexts.get(el);
-    const text = clean(visibleText(el));
+    // 长提问折叠时末尾的展开按钮文字
+    const text = clean(visibleText(el)).replace(/\s*(Show more|Show less|显示更多|展开|收起)$/i, '');
     if (text) userTexts.set(el, text);
     return text;
   };
@@ -471,6 +481,11 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
   // ---------------------------------------------------------------------------
   // 读取对话结构
   // ---------------------------------------------------------------------------
+  function nearTop(el) {
+    const sc = findScroller();
+    return sc.scrollTop < sc.clientHeight && el.getBoundingClientRect().top < sc.getBoundingClientRect().top + sc.clientHeight;
+  }
+
   // 网站没有绝对序号时，按新消息在页面上的前后邻居确定位置，这样往上滚动发现的消息也能排在前面
   function fillOrders(live, cache) {
     for (let i = 0; i < live.length; i++) {
@@ -481,7 +496,9 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       const before = i ? live[i - 1].order : null;
       const after = end < live.length ? live[end].order : null;
       const known = [...cache.values()].map((m) => m.order).filter((o) => o !== undefined);
-      const low = before ?? (after !== null ? after - count - 1 : Math.max(0, ...known));
+      let low = before ?? (after !== null ? after - count - 1 : Math.max(0, ...known));
+      // 和已收录的消息没有重叠：在顶部附近出现的是刚加载的更早消息，排到最前面
+      if (before === null && after === null && known.length && nearTop(live[i].el)) low = Math.min(...known) - count - 1;
       const step = after !== null ? (after - low) / (count + 1) : 1;
       for (let k = 0; k < count; k++) live[i + k].order = low + step * (k + 1);
       i = end - 1;
@@ -500,7 +517,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const items = [
       ...users.map((el) => ({ type: 'user', el })),
       ...assistants.map((el) => ({ type: 'assistant', el })),
-    ].sort((a, b) => docOrder(a.el, b.el));
+    ].sort((a, b) => (CFG.visual && a.el.getBoundingClientRect().top - b.el.getBoundingClientRect().top) || docOrder(a.el, b.el));
 
     const live = [];
     const counts = {};
@@ -525,6 +542,7 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       S.owners.set(id, conv);
       const msg = cache.get(id) || { id, type, sub, seq: S.seq++, headings: [] };
       msg.el = el;
+      if (CFG.round) msg.round = CFG.round(el) || msg.round;
       msg.order = order ?? msg.order;
       if (type === 'user') {
         msg.text = userText(el) || '（空白提问）';
@@ -548,11 +566,10 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     // 重新生成或编辑后，同一位置换了新消息，旧的要去掉
     const liveIds = new Set(live.map((m) => m.id));
     const taken = new Set(live.map((m) => m.order + m.type));
-    const first = live.length ? live[0].order : 0;
-    const last = live.length ? live[live.length - 1].order : 0;
+    // 同一轮里出现了新的回答，不在页面上的旧回答是被重新生成替换掉的
+    const rounds = new Set(live.filter((m) => m.round).map((m) => m.round + m.type));
     for (const m of cache.values()) {
-      // 页面上的消息是连续的，夹在中间却不在页面上的也已被替换
-      if (!liveIds.has(m.id) && (taken.has(m.order + m.type) || (m.order > first && m.order < last))) {
+      if (!liveIds.has(m.id) && (taken.has(m.order + m.type) || (m.round && rounds.has(m.round + m.type)))) {
         cache.delete(m.id);
         S.owners.delete(m.id);
       }
@@ -729,14 +746,20 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     return el && el.isConnected ? el : null;
   }
 
-  function jumpTo(el) {
+  // find 返回目标当前的元素：虚拟列表重新渲染后，同一条消息可能换成了新元素
+  function jumpTo(el, find) {
     clearInterval(edgeTimer);
     el.style.scrollMarginTop = SCROLL_OFFSET + 'px';
     el.scrollIntoView({ block: 'start' });
-    // 虚拟列表测量高度后位置会变，再校正两次
-    [150, 450].forEach((ms) =>
+    // 虚拟列表测量高度后位置会变，持续校正一段时间；用户操作后停止
+    const seek = S.seek;
+    [150, 450, 900, 1600, 2500].forEach((ms) =>
       setTimeout(() => {
-        if (el.isConnected && Math.abs(el.getBoundingClientRect().top - SCROLL_OFFSET) > 8) el.scrollIntoView({ block: 'start' });
+        if (seek !== S.seek) return;
+        const cur = el.isConnected ? el : find && find();
+        if (!cur || Math.abs(cur.getBoundingClientRect().top - SCROLL_OFFSET) <= 8) return;
+        cur.style.scrollMarginTop = SCROLL_OFFSET + 'px';
+        cur.scrollIntoView({ block: 'start' });
       }, ms)
     );
     try {
@@ -757,8 +780,12 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     updateActive();
     scanMessages();
     const seek = ++S.seek;
+    const find = () => {
+      scanMessages();
+      return liveEl(item, isGroup);
+    };
     const found = liveEl(item, isGroup);
-    if (found) return jumpTo(found);
+    if (found) return jumpTo(found, find);
 
     // 条目已被卸载：比较视口内消息的序号，二分滚动到它所在的位置
     clearInterval(edgeTimer);
@@ -774,13 +801,17 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
         })
         .map((m) => m.order);
       const el = liveEl(item, isGroup);
-      if (el) return jumpTo(el);
+      if (el) return jumpTo(el, find);
       if (orders.length && (target < Math.min(...orders) || target > Math.max(...orders))) {
         const up = target < Math.min(...orders);
         if (up) hi = sc.scrollTop;
         else lo = sc.scrollTop;
         // 第一步按序号比例估算；高度也是估算的，区间收窄后改为逐屏移动
-        if (tries === 0) sc.scrollTop = hi * (target / Math.max(1, ...S.model.map((g) => g.msg.order)));
+        if (tries === 0) {
+          const all = S.model.map((g) => g.msg.order);
+          const min = Math.min(...all);
+          sc.scrollTop = hi * ((target - min) / Math.max(1, Math.max(...all) - min));
+        }
         else sc.scrollTop = hi - lo > sc.clientHeight ? (lo + hi) / 2 : sc.scrollTop + (up ? -0.7 : 0.7) * sc.clientHeight;
       }
       await new Promise((r) => setTimeout(r, 250));
@@ -807,13 +838,19 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     S.seek++;
     clearInterval(edgeTimer);
     sc.scrollTop = target();
-    // 虚拟列表加载新内容后高度会变，短时间内继续校正；用户滚动时立即停止
+    // 网站滚到边缘时会继续加载更早或更新的消息，高度会变；一直校正到高度稳定，用户滚动时立即停止
     let tries = 0;
+    let height = sc.scrollHeight;
+    let still = 0;
     sc.addEventListener('wheel', stop, { passive: true, once: true });
     edgeTimer = setInterval(() => {
-      if (++tries > 10) return stop();
+      if (++tries > 80) return stop();
       sc.scrollTop = target();
-    }, 150);
+      if (sc.scrollHeight !== height) {
+        height = sc.scrollHeight;
+        still = 0;
+      } else if (++still >= 12) stop();
+    }, 250);
   }
 
   // 滚动时高亮当前位置
