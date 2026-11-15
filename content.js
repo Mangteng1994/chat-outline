@@ -13,8 +13,11 @@
   // ---------------------------------------------------------------------------
   const SITES = {
     claude: {
-      user: ['[data-testid="user-message"]'],
-      assistant: ['.font-claude-response', '.font-claude-message', '[data-is-streaming]'],
+      // 新版页面每条提问是 [data-cds="UserMessage"]，只发图片/文件时里面没有 user-message；旧版只有 user-message
+      user: ['[data-cds="UserMessage"]', '[data-testid="user-message"]'],
+      mergeUser: true,
+      userText: '[data-testid="user-message"]',
+      assistant: ['[data-testid="assistant-message"]', '.font-claude-response', '.font-claude-message', '[data-is-streaming]'],
       composer: ['div.ProseMirror[contenteditable="true"]', 'fieldset [contenteditable="true"]', 'textarea'],
       // 消息在整个对话中的绝对序号，虚拟列表卸载消息后靠它排序
       order: (el) => {
@@ -28,6 +31,9 @@
       user: ['[data-user-message-bubble="true"]', '[data-message-author-role="user"]', 'article[data-turn="user"]', '[data-turn="user"]'],
       assistant: ['[data-markdown-text-style="assistant-message"]', '[data-message-author-role="assistant"]', 'article[data-turn="assistant"]', '[data-turn="assistant"]'],
       composer: ['#prompt-textarea', 'div.ProseMirror[contenteditable="true"]', 'form textarea'],
+      // 只有图片/文件的提问没有文字气泡：几个选择器合并，再取最外层的整轮提问
+      mergeUser: true,
+      userText: '[data-user-message-bubble="true"]',
       // 切换对话后旧对话仍留在页面的隐藏容器里，只读取可见容器中的消息
       pane: '[data-app-action-timeline-scroll]',
       // 页面上的 fallback-turn-N 只是当前加载范围内的位置，加载更早的消息后会指向别的消息，
@@ -39,18 +45,29 @@
       round: (el) => chatgptRound(el),
     },
     deepseek: {
-      user: ['.fbb737a4', '.ds-message:not(:has(.ds-markdown))'],
-      assistant: ['.ds-message .ds-markdown', '.ds-markdown'],
+      // 文字提问有 .fbb737a4，图片/文件附件在 .eafda4ae，纯附件提问没有 .fbb737a4；
+      // 最后一个是不依赖类名哈希的兜底（没有回答内容的 .ds-message）。合并后取最外层的整条消息
+      user: ['.fbb737a4', '.eafda4ae', '.ds-message:not(:has(.ds-markdown, .ds-think-content))'],
+      mergeUser: true,
+      userText: '.fbb737a4',
+      // 回答里的思考块也带 .ds-markdown，只取正文，否则每条回答会算两次、思考内容里的标题会混进目录
+      assistant: ['.ds-markdown.ds-assistant-message-main-content', '.ds-message .ds-markdown'],
       composer: ['textarea#chat-input', 'textarea'],
+      // 提问的 key 是负数、回答是正数（-2/2、-4/4…），直接排序会把所有提问排在回答前面
       order: (el) => {
         const row = el.closest('[data-virtual-list-item-key]');
-        return row ? +row.getAttribute('data-virtual-list-item-key') : null;
+        if (!row) return null;
+        const k = +row.getAttribute('data-virtual-list-item-key');
+        return k < 0 ? -k * 2 : k * 2 + 1;
       },
     },
     gemini: {
       user: ['user-query .query-text', 'user-query'],
       assistant: ['model-response .markdown', 'model-response'],
       composer: ['rich-textarea .ql-editor[contenteditable="true"]', '.ql-editor[contenteditable="true"]'],
+      // 只有图片/文件的提问没有 .query-text（附件在 .file-preview-container 里），取整个 user-query
+      mergeUser: true,
+      userText: '.query-text',
       // 页面上没有绝对序号，id 也不递增，只能标识消息；位置由 fillOrders 推算
       turn: (el) => el.closest('.conversation-container')?.id,
     },
@@ -68,6 +85,10 @@
     },
     doubao: {
       user: ['[data-testid="send_message"]', '[data-message-role="user"]'],
+      // 有文字的提问才有 message_text_content；纯图片没有文字，纯文件只有文件名
+      userText: '[data-testid="message_text_content"]',
+      // 带文字的文件提问会被拆成两条（先文件、后文字），回答只有一条：合并成一项
+      mergeSplit: true,
       assistant: ['[data-testid="receive_message"]', '[data-message-role="assistant"]'],
       composer: ['div.ProseMirror[contenteditable="true"]', 'textarea[data-testid="chat_input_input"]', 'textarea'],
       // 消息 id 不递增，不能当序号；位置由 fillOrders 推算
@@ -93,7 +114,7 @@
 
   const HEADING_SEL = 'h1,h2,h3,h4,h5,h6';
   // 不属于消息内容的隐藏文字和按钮
-  const HIDDEN_SEL = '.sr-only, .cdk-visually-hidden, .segment-user-action-row, .segment-user-actions, [data-testid="send_message"] time, button';
+  const HIDDEN_SEL = '.sr-only, .cdk-visually-hidden, .segment-user-action-row, .segment-user-actions, [data-testid="send_message"] time, [data-cds="RelativeTime"], [data-testid="user-message-actions"], button';
   const SCROLL_OFFSET = 90; // 跳转时为顶部固定栏预留的距离
   const DEFAULT_SETTINGS = { open: true, tab: 'outline', depth: 3, starredOnly: false };
 
@@ -204,12 +225,21 @@
   const userText = (el) => {
     if (userTexts.has(el)) return userTexts.get(el);
     // 长提问折叠时末尾的展开按钮文字
-    const text = clean(visibleText(el)).replace(/\s*(Show more|Show less|显示更多|展开|收起)$/i, '');
+    // 带附件的提问：整轮容器里还有文件卡片的文字，有文字部分时只取文字部分
+    const src = (CFG.userText && el.querySelector(CFG.userText)) || el;
+    const text = clean(visibleText(src)).replace(/\s*(Show more|Show less|显示更多|展开|收起)$/i, '');
     if (text) userTexts.set(el, text);
     return text;
   };
 
+  // 提问没有文字时（只发了图片或文件），用附件代替显示
+  const attachmentLabel = (el) => {
+    const imgs = el.querySelectorAll('img').length;
+    return imgs ? (imgs > 1 ? `（${imgs} 张图片）` : '（图片）') : '';
+  };
+
   const ICON = {
+    edit: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z"/><path d="M14.5 7.5l3 3"/></svg>',
     star: '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/></svg>',
     starOn: '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/></svg>',
     down: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
@@ -240,7 +270,9 @@
     syncEnabled: false,
     syncStatus: null,
     stars: new Set(),
-    marks: { stars: {}, hidden: {} },
+    marks: { stars: {}, hidden: {}, titles: {} },
+    titles: new Map(), // 提问的自定义名称：key → 名称
+    renaming: null, // 正在改名的提问 { key, draft }
     hidden: new Set(), // 隐藏的条目，key 与折叠状态相同（g:… / h:…）
     showHidden: false,
     collapsed: new Set(),
@@ -322,8 +354,10 @@ textarea { resize:vertical; min-height:140px; line-height:1.5; }
 .ghead { display:flex; align-items:center; gap:6px; }
 .badge { background:var(--ok-bg); color:var(--ok-tx); font-size:11px; font-weight:600; padding:0 6px; border-radius:6px; line-height:18px; }
 .lbl, .cnt { font-size:12px; color:var(--tx3); }
-.gstar, .ghide { visibility:hidden; flex:none; color:var(--tx3); }
-.grp:hover > .ghead .gstar, .grp:hover > .ghead .ghide, .gstar.on, .ghide.on { visibility:visible; }
+.gstar, .ghide, .gedit { visibility:hidden; flex:none; color:var(--tx3); }
+.grp:hover > .ghead .gstar, .grp:hover > .ghead .ghide, .grp:hover > .ghead .gedit, .gstar.on, .ghide.on, .gedit.on { visibility:visible; }
+.gedit.on { color:var(--ac-tx); }
+.gname { flex:1; min-width:0; padding:2px 6px; border-radius:6px; }
 .ghead .ib { width:22px; height:22px; flex:none; }
 .ghead { gap:4px; }
 .node { position:relative; }
@@ -510,7 +544,9 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const conv = convKey();
     if (!S.caches.has(conv)) S.caches.set(conv, new Map());
     const cache = S.caches.get(conv);
-    const users = outermost(inActivePane(qsaFirst(CFG.user)));
+    // 文字气泡只在提问有文字时才有；只有图片/文件的提问、刚发出的第一条提问可能没有它，
+    // 所以这类站点把几个选择器的结果合并，再取最外层（整轮提问容器）
+    const users = outermost(inActivePane(CFG.mergeUser ? qsaAll(CFG.user) : qsaFirst(CFG.user)));
     const assistants = outermost(inActivePane(SITE === 'claude' ? qsaAll(CFG.assistant) : qsaFirst(CFG.assistant))).filter(
       (a) => !users.some((u) => u.contains(a) || a.contains(u))
     );
@@ -545,7 +581,9 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       if (CFG.round) msg.round = CFG.round(el) || msg.round;
       msg.order = order ?? msg.order;
       if (type === 'user') {
-        msg.text = userText(el) || '（空白提问）';
+        // 没有文字节点（只有附件）；没配 userText 的站点就看有没有读到文字
+        msg.noText = CFG.userText ? !el.querySelector(CFG.userText) && !el.matches(CFG.userText) : !userText(el);
+        msg.text = userText(el) || attachmentLabel(el) || '（空白提问）';
         if (!msg.key) {
           msg.base = hash(msg.text.slice(0, 300));
           msg.key = msg.base + '-' + ([...cache.values()].filter((m) => m.base === msg.base).length + 1);
@@ -585,6 +623,11 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     const groups = [];
     let cur = null;
     for (const m of msgs) {
+      // 紧跟在“没有文字的提问”后面、中间没有回答的提问，视为同一条（见 SITES.doubao.mergeSplit）
+      if (CFG.mergeSplit && m.type === 'user' && cur && cur.msg.type === 'user' && cur.msg.noText && !cur.answers.length) {
+        cur.text = m.text;
+        continue;
+      }
       if (m.type === 'user' || !cur) {
         const isUser = m.type === 'user';
         cur = { key: isUser ? m.key : 'a-' + m.id, el: m.el, msg: m, text: isUser ? m.text : '（提问未加载）', headings: [], answers: [] };
@@ -670,10 +713,12 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       const gk = 'g:' + g.key;
       const isHidden = S.hidden.has(gk);
       if (isHidden && !S.showHidden) continue;
+      const custom = S.titles.get(g.key) || '';
+      const label = custom || g.text;
       let tree = g.tree;
       if (q) {
         tree = filterTree(g.tree, q);
-        if (!tree.length && !g.text.toLowerCase().includes(q)) continue;
+        if (!tree.length && !label.toLowerCase().includes(q) && !g.text.toLowerCase().includes(q)) continue;
       }
       shown++;
       const collapsed = !q && S.collapsed.has(gk);
@@ -681,8 +726,11 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       html += `<div class="grp ${isHidden ? 'hid' : ''}" data-key="${esc(g.key)}">
         <div class="ghead">
           <span class="badge">${num}</span>
-          <div class="gtext" data-act="goto-u" data-id="${g.id}" title="${esc(g.text.slice(0, 500))}">${highlight(g.text, q)}</div>
+          ${S.renaming && S.renaming.key === g.key
+            ? `<input class="gname" id="gname" maxlength="200" value="${esc(S.renaming.draft)}" placeholder="${esc(g.text.slice(0, 60))}" />`
+            : `<div class="gtext" data-act="goto-u" data-id="${g.id}" title="${esc((custom ? '原问题：' : '') + g.text.slice(0, 500))}">${highlight(label, q)}</div>`}
           <span class="cnt" title="${g.headings.length} 个标题">${g.headings.length || ''}</span>
+          <button class="ib gedit ${custom ? 'on' : ''}" data-act="rename" data-key="${esc(g.key)}" title="${custom ? '修改名称（悬浮名称可看原问题）' : '给这个提问改名'}">${ICON.edit}</button>
           <button class="ib gstar ${starred ? 'on' : ''}" data-act="star" data-key="${esc(g.key)}" title="${starred ? '取消标记' : '标记这个提问'}">${starred ? ICON.starOn : ICON.star}</button>
           <button class="ib ghide ${isHidden ? 'on' : ''}" data-act="hide" data-ck="${esc(gk)}" title="${isHidden ? '取消隐藏' : '隐藏这个提问'}">${isHidden ? ICON.eye : ICON.eyeOff}</button>
           ${g.tree.length ? `<button class="ib chev" data-act="toggle-g" data-ck="${esc(gk)}" title="${collapsed ? '展开' : '折叠'}">${collapsed ? ICON.right : ICON.down}</button>` : ''}
@@ -697,16 +745,42 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       else html = `<div class="empty">没有匹配“${esc(S.outlineQuery)}”的内容。</div>`;
     }
     olist.innerHTML = html;
+    const gn = olist.querySelector('#gname');
+    if (gn) {
+      gn.focus();
+      gn.select();
+    }
     renderHiddenBar();
     S.activeId = null;
     updateActive();
   }
 
   function applyMarks(marks) {
-    S.marks = { stars: {}, hidden: {}, ...marks };
+    S.marks = { stars: {}, hidden: {}, titles: {}, ...marks };
     const onKeys = (items) => Object.keys(items).filter((k) => items[k].on);
     S.stars = new Set(onKeys(S.marks.stars));
     S.hidden = new Set(onKeys(S.marks.hidden));
+    S.titles = new Map(onKeys(S.marks.titles).filter((k) => S.marks.titles[k].text).map((k) => [k, S.marks.titles[k].text]));
+  }
+  // 改名：留空就恢复原问题；和星标一样带修改时间，同步时取较新的
+  function setTitle(key, text) {
+    text = clean(text);
+    S.marks.titles[key] = { on: !!text, text, at: Date.now() };
+    store.set(marksKey(), S.marks);
+    applyMarks(S.marks);
+    queueSync();
+  }
+  function endRename(save) {
+    const r = S.renaming;
+    if (!r) return;
+    S.renaming = null;
+    if (save) {
+      const g = S.model.find((x) => x.key === r.key);
+      const text = clean(r.draft);
+      // 改回和原问题一样就等于没改
+      setTitle(r.key, g && text === g.text ? '' : text);
+    }
+    renderOutline();
   }
   function toggleMark(kind, key) {
     const item = S.marks[kind][key];
@@ -932,6 +1006,11 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
       const ck = t.dataset.ck;
       toggleMark('hidden', ck);
       renderOutline();
+    } else if (act === 'rename') {
+      e.stopPropagation();
+      const k = t.dataset.key;
+      S.renaming = { key: k, draft: S.titles.get(k) || (S.model.find((x) => x.key === k) || {}).text || '' };
+      renderOutline();
     } else if (act === 'star') {
       e.stopPropagation();
       const k = t.dataset.key;
@@ -947,6 +1026,18 @@ mark { background:rgba(242,182,50,.35); color:inherit; border-radius:3px; }
     } else if (act === 'goto-h') {
       pinAndJump(t.dataset.id);
     }
+  });
+
+  olist.addEventListener('input', (e) => {
+    if (e.target.id === 'gname' && S.renaming) S.renaming.draft = e.target.value;
+  });
+  olist.addEventListener('keydown', (e) => {
+    if (e.target.id !== 'gname' || e.isComposing) return;
+    if (e.key === 'Enter') endRename(true);
+    else if (e.key === 'Escape') endRename(false);
+  });
+  olist.addEventListener('focusout', (e) => {
+    if (e.target.id === 'gname') endRename(true);
   });
 
   $('#hbar').addEventListener('click', (e) => {

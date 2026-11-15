@@ -62,14 +62,14 @@ function mergeOutline(a, b, now = Date.now()) {
   for (const id of new Set([...Object.keys(a.conversations), ...Object.keys(b.conversations)])) {
     const x = a.conversations[id] || {};
     const y = b.conversations[id] || {};
-    const marks = { stars: mergeItems(x.stars, y.stars, now), hidden: mergeItems(x.hidden, y.hidden, now) };
-    if (Object.keys(marks.stars).length || Object.keys(marks.hidden).length) conversations[id] = marks;
+    const marks = { stars: mergeItems(x.stars, y.stars, now), hidden: mergeItems(x.hidden, y.hidden, now), titles: mergeItems(x.titles, y.titles, now) };
+    if (Object.keys(marks.stars).length || Object.keys(marks.hidden).length || Object.keys(marks.titles).length) conversations[id] = marks;
   }
   return { conversations };
 }
 
-const sortedItems = (items = {}) => Object.keys(items).sort().map((k) => [k, items[k].on, items[k].at]);
-const canonicalMarks = (m) => JSON.stringify([sortedItems(m.stars), sortedItems(m.hidden)]);
+const sortedItems = (items = {}) => Object.keys(items).sort().map((k) => [k, items[k].on, items[k].at, items[k].text || '']);
+const canonicalMarks = (m) => JSON.stringify([sortedItems(m.stars), sortedItems(m.hidden), sortedItems(m.titles)]);
 const canonicalOutline = (d) =>
   JSON.stringify(Object.keys(d.conversations).sort().map((id) => [id, canonicalMarks(d.conversations[id])]));
 
